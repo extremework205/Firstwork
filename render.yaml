@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: crypto-mining-platform
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host=0.0.0.0 --port=10000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.18
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: crypto-mining-db
+          property: connectionString
+      - key: SMTP_SERVER
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: FROM_NAME
+        value: Crypto Mining Platform
+      - key: SITE_NAME
+        value: Crypto Mining Platform
+      - key: BASE_URL
+        fromService:
+          type: web
+          name: crypto-mining-platform
+          property: hostport
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_PIN
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
+      - key: BITCOIN_WALLET_ADDRESS
+        sync: false
+      - key: ETHEREUM_WALLET_ADDRESS
+        sync: false
+
+databases:
+  - name: crypto-mining-db
+    databaseName: crypto_mining
+    user: crypto_user
+    region: oregon
+    plan: free
