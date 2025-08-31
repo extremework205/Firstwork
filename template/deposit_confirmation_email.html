@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="x-apple-disable-message-reformatting">
+<title>Deposit Confirmed - Start Mining!</title>
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f5f7fa;
+    color: #333333;
+  }
+  .container {
+    max-width: 600px;
+    background: #ffffff;
+    margin: 40px auto;
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+    overflow: hidden;
+  }
+  .header {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    padding: 25px 20px;
+    text-align: center;
+    position: relative;
+  }
+  .header::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.1);
+    pointer-events: none;
+  }
+  .header img {
+    max-width: 140px;
+    position: relative;
+    z-index: 1;
+  }
+  .content {
+    padding: 30px;
+  }
+  h1 {
+    font-size: 24px;
+    color: #222222;
+    margin-bottom: 20px;
+  }
+  p {
+    font-size: 16px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+    color: #555555;
+  }
+  .deposit-details {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border: 2px solid #f59e0b;
+    padding: 20px;
+    border-radius: 12px;
+    margin: 25px 0;
+  }
+  .detail-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 16px;
+  }
+  .detail-label {
+    font-weight: 600;
+    color: #92400e;
+  }
+  .detail-value {
+    color: #1f2937;
+    font-weight: 500;
+  }
+  .mining-status {
+    text-align: center;
+    background: #dcfce7;
+    border: 2px solid #16a34a;
+    padding: 15px;
+    border-radius: 8px;
+    margin: 20px 0;
+  }
+  .mining-status h3 {
+    color: #15803d;
+    margin: 0 0 10px 0;
+    font-size: 18px;
+  }
+  .footer {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    color: #ffffff;
+    font-size: 12px;
+    text-align: center;
+    padding: 25px 20px;
+    border-top: 2px solid rgba(255, 255, 255, 0.1);
+  }
+  .footer a {
+    color: #fbbf24;
+    text-decoration: underline;
+    transition: color 0.2s ease;
+  }
+  .footer a:hover {
+    color: #ffffff;
+  }
+  @media only screen and (max-width: 480px) {
+    .container {
+      margin: 20px 10px;
+    }
+    .content {
+      padding: 20px;
+    }
+    .detail-row {
+      flex-direction: column;
+      margin-bottom: 15px;
+    }
+    .detail-label {
+      margin-bottom: 5px;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <img src="https://cryptomining.com/logo.png" alt="Crypto Mining Platform">
+  </div>
+  
+  <div class="content">
+    <h1>🎉 Deposit Confirmed - Mining Started!</h1>
+    <p>Great news! Your deposit has been confirmed and your mining session has begun.</p>
+    
+    <div class="deposit-details">
+      <div class="detail-row">
+        <span class="detail-label">Deposit Amount:</span>
+        <span class="detail-value">{{ amount }} {{ crypto_type }}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">USD Value:</span>
+        <span class="detail-value">${{ usd_amount }}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Mining Rate:</span>
+        <span class="detail-value">{{ mining_rate }}% per 24 hours</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Expected Daily Earnings:</span>
+        <span class="detail-value">{{ daily_earnings }} {{ crypto_type }}</span>
+      </div>
+    </div>
+    
+    <div class="mining-status">
+      <h3>⛏️ Mining Status: ACTIVE</h3>
+      <p style="margin: 0; color: #15803d;">Your crypto is now mining and earning rewards!</p>
+    </div>
+    
+    <p>You can track your mining progress and earnings in real-time through your dashboard.</p>
+  </div>
+  
+  <div class="footer">
+    &copy; 2025 Crypto Mining Platform. All rights reserved.<br>
+    <a href="#">Privacy Policy</a> |
+    <a href="#">Terms of Service</a>
+  </div>
+</div>
+</body>
+</html>

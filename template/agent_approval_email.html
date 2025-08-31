@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="x-apple-disable-message-reformatting">
+    <title>New User Approval Request</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #333333;
+        }
+        
+        .container {
+            max-width: 600px;
+            background: #ffffff;
+            margin: 40px auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #9333ea 0%, #ec4899 100%);
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .header img {
+            max-width: 140px;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        h2 {
+            font-size: 22px;
+            color: #222222;
+            margin-bottom: 20px;
+        }
+        
+        p {
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            color: #555555;
+        }
+        
+        ul {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 20px;
+        }
+        
+        li {
+            margin-bottom: 8px;
+            font-size: 15px;
+        }
+        
+        strong {
+            color: #222222;
+        }
+        
+        a.button {
+            display: inline-block;
+            padding: 12px 24px;
+            color: white !important;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-right: 10px;
+            font-weight: 600;
+            font-size: 15px;
+        }
+        
+        a.approve {
+            background-color: #4CAF50;
+        }
+        
+        a.reject {
+            background-color: #f44336;
+        }
+        
+        .footer {
+            background: linear-gradient(135deg, #9333ea 0%, #ec4899 100%);
+            color: #ffffff;
+            font-size: 12px;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .footer a {
+            color: #ffffff;
+            text-decoration: underline;
+        }
+        
+        @media only screen and (max-width: 480px) {
+            .container {
+                margin: 20px 10px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- HEADER -->
+        <div class="header">
+            <img src="https://survecta.com/surve.png" alt="Survecta">
+        </div>
+        
+        <!-- CONTENT -->
+        <div class="content">
+            <h2>New User Approval Request</h2>
+            <p>A new user has signed up with your referral code:</p>
+            
+            <ul>
+                <li><strong>Name:</strong> {{ user_name }}</li>
+                <li><strong>Email:</strong> {{ user_email }}</li>
+            </ul>
+            
+            <p>Please choose an action:</p>
+            <p>
+                <a href="{{ approve_url }}" class="button approve">Approve User</a>
+                <a href="{{ reject_url }}" class="button reject">Reject User</a>
+            </p>
+        </div>
+        
+        <!-- FOOTER -->
+        <div class="footer">
+            &copy; 2025 Survecta. All rights reserved.<br>
+            <a href="https://survecta.com/privacy-policy">Privacy Policy</a> |
+            <a href="https://survecta.com/terms-and-conditions">Terms of Service</a>
+        </div>
+    </div>
+</body>
+</html>
