@@ -2215,7 +2215,7 @@ def process_email_queue():
 # APPLICATION STARTUP
 # =============================================================================
 
-if __name__ == "__main__":
+"""if __name__ == "__main__":
     import uvicorn
     
     # Create database tables
@@ -2269,6 +2269,64 @@ if __name__ == "__main__":
     finally:
         db.close()
     
+    uvicorn.run(app, host="0.0.0.0", port=8000)"""
+
+
+@app.on_event("startup")
+def setup_database_and_admin():
+    # Create database tables
+    Base.metadata.create_all(bind=engine)
+
+    # Create admin user if it doesn't exist
+    db = SessionLocal()
+    try:
+        admin_email = os.getenv("ADMIN_EMAIL")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        admin_pin = os.getenv("ADMIN_PIN")
+
+        if not admin_email or not admin_password or not admin_pin:
+            print("⚠️ Missing ADMIN credentials in environment, skipping admin creation.")
+            return
+
+        existing_admin = db.query(User).filter(User.email == admin_email).first()
+        if not existing_admin:
+            admin_user = User(
+                name="Admin",
+                email=admin_email,
+                password=pwd_context.hash(admin_password),
+                pin=pwd_context.hash(admin_pin),
+                is_admin=True,
+                is_verified=True,
+                user_id=generate_user_id(),
+                referral_code=generate_referral_code()
+            )
+            db.add(admin_user)
+            db.commit()
+            print(f"✅ Admin user created: {admin_email}")
+
+        existing_settings = db.query(AdminSettings).first()
+        if not existing_settings:
+            default_settings = AdminSettings(
+                bitcoin_rate_usd=50000.0,
+                ethereum_rate_usd=3000.0,
+                referral_reward_bitcoin=0.001,
+                referral_reward_ethereum=0.01,
+                referee_reward_bitcoin=0.0005,
+                referee_reward_ethereum=0.005
+            )
+            db.add(default_settings)
+            db.commit()
+            print("✅ Default admin settings created")
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error creating admin user/settings: {e}")
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 @app.get("/api/analytics/dashboard", response_model=UserAnalyticsResponse)
