@@ -207,6 +207,8 @@ class User(Base):
     withdrawals = relationship("Withdrawal", back_populates="user", foreign_keys="Withdrawal.user_id")
     approvals = relationship("UserApproval", back_populates="user", foreign_keys="UserApproval.user_id")
     activity_logs = relationship("ActivityLog", back_populates="user", cascade="all, delete-orphan")
+    deposits = relationship("CryptoDeposit", back_populates="user", foreign_keys="CryptoDeposit.user_id")
+    confirmed_deposits = relationship("CryptoDeposit", foreign_keys="CryptoDeposit.confirmed_by")
     mining_sessions = relationship("MiningSession", back_populates="user")
 
 class ReferralReward(Base):
