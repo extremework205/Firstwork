@@ -751,7 +751,7 @@ class AdminCryptoTransferRequest(BaseModel):
     crypto_type: CryptoType
     amount: Decimal
 
-    @validator("amount")
+    @field_validator("amount")
     def validate_amount(cls, v):
         if v <= 0:
             raise ValueError("Amount must be greater than 0")
