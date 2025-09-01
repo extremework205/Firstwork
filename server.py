@@ -1918,8 +1918,8 @@ def get_pending_deposits(admin_user: User = Depends(get_admin_user), db: Session
 @app.put("/api/admin/deposits/{deposit_id}/confirm")
 async def confirm_deposit(
     deposit_id: int,
-    action: str = Query(...),  # "confirm" or "reject"
     request: Request,
+    action: str = Query(...),  # "confirm" or "reject"
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
