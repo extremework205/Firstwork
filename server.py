@@ -543,7 +543,7 @@ class UserDevice(Base):
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
     
-    id = Column(Integer, primary_key=True, index=Index)
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     action = Column(String, nullable=False)  # e.g., "USER_LOGIN", "DEPOSIT_MADE"
     details = Column(Text)
@@ -589,7 +589,7 @@ class FraudFlag(Base):
 class OTP(Base):
     __tablename__ = "otps"
     
-    id = Column(Integer, primary_key=True, index=Index)
+    id = Column(Integer, primary_key=True, index=True)
     email = Column(String, nullable=False)
     otp_code = Column(String, nullable=False)
     purpose = Column(String, nullable=False) # signup, password_reset, pin_reset
@@ -613,7 +613,7 @@ class CryptoTransfer(Base):
 class MiningSession(Base):
     __tablename__ = "mining_sessions"
     
-    id = Column(Integer, primary_key=True, index=Index)
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     deposit_id = Column(Integer, ForeignKey("crypto_deposits.id"), nullable=False)
     crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
@@ -630,7 +630,7 @@ class MiningSession(Base):
 class Withdrawal(Base):
     __tablename__ = "withdrawals"
     
-    id = Column(Integer, primary_key=True, index=Index)
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     crypto_type = Column(String, nullable=False)
     amount = Column(SQLDecimal(18, 8), nullable=False)
@@ -644,7 +644,7 @@ class Withdrawal(Base):
 class UserApproval(Base):
     __tablename__ = "user_approvals"
     
-    id = Column(Integer, primary_key=True, index=Index)
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     approved_by = Column(Integer, ForeignKey("users.id"))
     status = Column(String, nullable=False)
