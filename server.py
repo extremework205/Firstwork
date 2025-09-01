@@ -1065,7 +1065,11 @@ class EarningsBreakdown(BaseModel):
 
 
 # Resolve all forward references for Pydantic models
-BaseModel.update_forward_refs()
+CryptoTransferResponse.update_forward_refs()
+FraudFlagResponse.update_forward_refs()
+UserResponse.update_forward_refs()
+AdminWithdrawalResponse.update_forward_refs()
+WithdrawalResponse.update_forward_refs()
 
 # =============================================================================
 # FASTAPI APPLICATION SETUP
