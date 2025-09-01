@@ -1844,7 +1844,7 @@ async def upload_deposit_evidence(
     }
 
 @app.post("/api/deposits/{deposit_id}/submit")
-def submit_deposit(
+async def submit_deposit(
     deposit_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
