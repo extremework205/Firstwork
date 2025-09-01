@@ -1063,6 +1063,10 @@ class EarningsBreakdown(BaseModel):
     total_earnings: Decimal
     earnings_by_period: List[dict]
 
+
+# Resolve all forward references for Pydantic models
+BaseModel.update_forward_refs()
+
 # =============================================================================
 # FASTAPI APPLICATION SETUP
 # =============================================================================
