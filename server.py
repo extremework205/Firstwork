@@ -1,4 +1,3 @@
-from __future__ import annotations
 import os
 import secrets
 import string
@@ -1062,15 +1061,6 @@ class EarningsBreakdown(BaseModel):
     referral_earnings: Decimal
     total_earnings: Decimal
     earnings_by_period: List[dict]
-
-
-# Only call on models with forward references
-CryptoTransferResponse.update_forward_refs()
-FraudFlagResponse.update_forward_refs()
-UserResponse.update_forward_refs()
-AdminWithdrawalResponse.update_forward_refs()
-WithdrawalResponse.update_forward_refs()
-LoginWithTwoFA.update_forward_refs()  # Add this if something references it later
 
 # =============================================================================
 # FASTAPI APPLICATION SETUP
