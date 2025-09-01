@@ -940,22 +940,21 @@ class CryptoTransferCreate(BaseModel):
     to_user_id: Optional[str] = None
     crypto_type: CryptoType
     amount: Decimal
-    
+
     @field_validator('amount')
     def amount_must_be_positive(cls, v):
         if v <= 0:
             raise ValueError('Amount must be positive')
         return v
-    
-    @model_validator
-    def either_email_or_user_id(cls, values):
-        to_email = values.get('to_email')
-        to_user_id = values.get('to_user_id')
-        if not to_email and not to_user_id:
+
+    @model_validator(mode="after")
+    def either_email_or_user_id(self):
+        # self is the model instance
+        if not self.to_email and not self.to_user_id:
             raise ValueError('Either to_email or to_user_id must be provided')
-        if to_email and to_user_id:
+        if self.to_email and self.to_user_id:
             raise ValueError('Provide either to_email or to_user_id, not both')
-        return values
+        return self
 
 class CryptoTransferResponse(BaseModel):
     id: int
