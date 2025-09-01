@@ -1064,12 +1064,13 @@ class EarningsBreakdown(BaseModel):
     earnings_by_period: List[dict]
 
 
-# Resolve all forward references for Pydantic models
+# Only call on models with forward references
 CryptoTransferResponse.update_forward_refs()
 FraudFlagResponse.update_forward_refs()
 UserResponse.update_forward_refs()
 AdminWithdrawalResponse.update_forward_refs()
 WithdrawalResponse.update_forward_refs()
+LoginWithTwoFA.update_forward_refs()  # Add this if something references it later
 
 # =============================================================================
 # FASTAPI APPLICATION SETUP
