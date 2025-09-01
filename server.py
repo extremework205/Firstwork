@@ -49,7 +49,7 @@ from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
 
 # Pydantic imports
-from pydantic import BaseModel, EmailStr, validator, root_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from jinja2 import Environment, FileSystemLoader
 
 import random
@@ -941,13 +941,13 @@ class CryptoTransferCreate(BaseModel):
     crypto_type: CryptoType
     amount: Decimal
     
-    @validator('amount')
+    @field_validator('amount')
     def amount_must_be_positive(cls, v):
         if v <= 0:
             raise ValueError('Amount must be positive')
         return v
     
-    @root_validator
+    @model_validator
     def either_email_or_user_id(cls, values):
         to_email = values.get('to_email')
         to_user_id = values.get('to_user_id')
@@ -973,7 +973,7 @@ class WithdrawalCreate(BaseModel):
     amount: Decimal
     wallet_address: str
     
-    @validator('amount')
+    @field_validator('amount')
     def amount_must_be_positive(cls, v):
         if v <= 0:
             raise ValueError('Amount must be positive')
