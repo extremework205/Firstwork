@@ -1110,8 +1110,8 @@ app.add_middleware(
         "https://cryptomining.com",
         "https://api.cryptomining.com",
         "https://mining-frontend.netlify.app",
-        "https://mining-backend.onrender.com",
-        "https://cryptomining.netlify.app"
+        "https://chainminer.onrender.com",
+        "https://chainminer.netlify.app"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
