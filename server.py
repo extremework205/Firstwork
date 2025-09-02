@@ -1174,7 +1174,7 @@ def get_admin_user(current_user: User = Depends(get_current_user)):
 # ENHANCED AUTHENTICATION ENDPOINTS
 # =============================================================================
 
-@app.post("/login")
+@app.post("/api/login")
 @limiter.limit("5/minute")  # Added rate limiting to login
 async def login_user(
     request: Request,
@@ -1282,7 +1282,7 @@ async def login_user(
         "requires_2fa": user.two_fa_enabled
     }
 
-@app.post("/security/2fa/setup", response_model=TwoFASetupResponse)
+@app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
 async def setup_2fa(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1314,7 +1314,7 @@ async def setup_2fa(
         backup_codes=backup_codes
     )
 
-@app.post("/security/2fa/verify")
+@app.post("/api/security/2fa/verify")
 async def verify_2fa_setup(
     verify_request: TwoFAVerifyRequest,
     current_user: User = Depends(get_current_user),
@@ -1339,7 +1339,7 @@ async def verify_2fa_setup(
     
     return {"message": "2FA enabled successfully"}
 
-@app.post("/security/2fa/disable")
+@app.post("/api/security/2fa/disable")
 async def disable_2fa(
     verify_request: TwoFAVerifyRequest,
     current_user: User = Depends(get_current_user),
@@ -1365,7 +1365,7 @@ async def disable_2fa(
     
     return {"message": "2FA disabled successfully"}
 
-@app.get("/security/2fa/status", response_model=TwoFAStatusResponse)
+@app.get("/api/security/2fa/status", response_model=TwoFAStatusResponse)
 async def get_2fa_status(
     current_user: User = Depends(get_current_user)
 ):
@@ -1374,7 +1374,7 @@ async def get_2fa_status(
         enabled=current_user.two_fa_enabled
     )
 
-@app.get("/security/settings", response_model=SecuritySettingsResponse)
+@app.get("/api/security/settings", response_model=SecuritySettingsResponse)
 async def get_security_settings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1393,7 +1393,7 @@ async def get_security_settings(
         last_login=last_login.created_at if last_login else None
     )
 
-@app.get("/admin/security/logs")
+@app.get("/api/admin/security/logs")
 async def get_security_logs(
     limit: int = 100,
     offset: int = 0,
@@ -1428,7 +1428,7 @@ async def get_security_logs(
         for log in logs
     ]
 
-@app.post("/admin/security/unlock-account")
+@app.post("/api/admin/security/unlock-account")
 async def unlock_user_account(
     user_email: str,
     admin_user: User = Depends(get_admin_user),
@@ -1452,7 +1452,7 @@ async def unlock_user_account(
     db.commit()
     return {"message": f"Account unlocked for {user_email}"}
 
-@app.get("/admin/security/stats")
+@app.get("/api/admin/security/stats")
 async def get_security_stats(
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
@@ -1489,7 +1489,7 @@ async def get_security_stats(
         }
     }
 
-@app.post("/register", response_model=UserResponse)
+@app.post("/api/register", response_model=UserResponse)
 async def register_user(
     user: UserCreate,
     request: Request,
@@ -1561,7 +1561,7 @@ async def register_user(
     
     return user_response
 
-@app.get("/user/profile", response_model=UserResponse)
+@app.get("/api/user/profile", response_model=UserResponse)
 async def get_user_profile(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     admin_settings = get_admin_settings(db)
     usd_values = calculate_usd_values(current_user, admin_settings)
