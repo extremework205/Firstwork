@@ -2295,7 +2295,7 @@ def setup_database_and_admin():
                 name="Admin",
                 email=admin_email,
                 password_hash=pwd_context.hash(admin_password),  # ✅ correct field
-                pin=pwd_context.hash(admin_pin),
+                pin_hash=pwd_context.hash(admin_pin),
                 is_admin=True,
                 is_verified=True,
                 user_id=generate_user_id(),
