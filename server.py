@@ -15,6 +15,7 @@ import httpx
 import pyotp  # Added for 2FA support
 from collections import defaultdict
 import time
+import logging
 import random
 
 # FastAPI and related imports
@@ -51,6 +52,9 @@ from email.utils import formataddr
 # Pydantic imports
 from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from jinja2 import Environment, FileSystemLoader
+
+
+logger = logging.getLogger("uvicorn.error")
 
 # =============================================================================
 # CONFIGURATION & CONSTANTS
