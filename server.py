@@ -2297,7 +2297,7 @@ def setup_database_and_admin():
                 password_hash=pwd_context.hash(admin_password),  # ✅ correct field
                 pin_hash=pwd_context.hash(admin_pin),
                 is_admin=True,
-                is_verified=True,
+                email_verified=True,
                 user_id=generate_user_id(),
                 referral_code=generate_referral_code()
             )
