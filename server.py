@@ -2274,10 +2274,10 @@ def process_email_queue():
 
 @app.on_event("startup")
 def setup_database_and_admin():
-    # Create database tables
+    # ✅ Create database tables
     Base.metadata.create_all(bind=engine)
 
-    # Create admin user if it doesn't exist
+    # ✅ Create default admin and settings
     db = SessionLocal()
     try:
         admin_email = os.getenv("ADMIN_EMAIL")
@@ -2288,12 +2288,13 @@ def setup_database_and_admin():
             print("⚠️ Missing ADMIN credentials in environment, skipping admin creation.")
             return
 
+        # 🔹 Check if admin already exists
         existing_admin = db.query(User).filter(User.email == admin_email).first()
         if not existing_admin:
             admin_user = User(
                 name="Admin",
                 email=admin_email,
-                password=pwd_context.hash(admin_password),
+                hashed_password=pwd_context.hash(admin_password),  # ✅ correct field
                 pin=pwd_context.hash(admin_pin),
                 is_admin=True,
                 is_verified=True,
@@ -2304,6 +2305,7 @@ def setup_database_and_admin():
             db.commit()
             print(f"✅ Admin user created: {admin_email}")
 
+        # 🔹 Check if default settings exist
         existing_settings = db.query(AdminSettings).first()
         if not existing_settings:
             default_settings = AdminSettings(
