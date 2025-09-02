@@ -2277,7 +2277,6 @@ def setup_database_and_admin():
     # ✅ Create database tables
     Base.metadata.create_all(bind=engine)
 
-    # ✅ Create default admin and settings
     db = SessionLocal()
     try:
         admin_email = os.getenv("ADMIN_EMAIL")
@@ -2288,13 +2287,34 @@ def setup_database_and_admin():
             print("⚠️ Missing ADMIN credentials in environment, skipping admin creation.")
             return
 
-        # 🔹 Check if admin already exists
-        existing_admin = db.query(User).filter(User.email == admin_email).first()
-        if not existing_admin:
+        # 🔹 Fetch all admin users
+        all_admins = db.query(User).filter(User.is_admin == True).all()
+
+        if all_admins:
+            # Keep only one admin: update the first admin with env vars
+            admin_user = all_admins[0]
+            admin_user.email = admin_email
+            admin_user.password_hash = pwd_context.hash(admin_password)
+            admin_user.pin_hash = pwd_context.hash(admin_pin)
+            admin_user.email_verified = True
+            admin_user.user_id = admin_user.user_id or generate_user_id()
+            admin_user.referral_code = admin_user.referral_code or generate_referral_code()
+            db.add(admin_user)
+            db.commit()
+            print(f"✅ Admin user updated: {admin_email}")
+
+            # Delete any extra admins
+            for extra_admin in all_admins[1:]:
+                db.delete(extra_admin)
+            db.commit()
+            if len(all_admins) > 1:
+                print(f"⚠️ Deleted {len(all_admins)-1} extra admin(s)")
+        else:
+            # No admin exists, create one
             admin_user = User(
                 name="Admin",
                 email=admin_email,
-                password_hash=pwd_context.hash(admin_password),  # ✅ correct field
+                password_hash=pwd_context.hash(admin_password),
                 pin_hash=pwd_context.hash(admin_pin),
                 is_admin=True,
                 email_verified=True,
@@ -2305,31 +2325,29 @@ def setup_database_and_admin():
             db.commit()
             print(f"✅ Admin user created: {admin_email}")
 
-        # 🔹 Check if default settings exist
+        # 🔹 Check if default admin settings exist
         existing_settings = db.query(AdminSettings).first()
         if not existing_settings:
             default_settings = AdminSettings(
                 bitcoin_rate_usd=50000.0,
                 ethereum_rate_usd=3000.0,
-                referral_reward_bitcoin=0.001,
-                referral_reward_ethereum=0.01,
-                referee_reward_bitcoin=0.0005,
-                referee_reward_ethereum=0.005
+                global_mining_rate=0.7,
+                referral_reward_enabled=True,
+                referral_reward_type="bitcoin",
+                referral_reward_amount=0.001,
+                referrer_reward_amount=0.001
             )
             db.add(default_settings)
             db.commit()
             print("✅ Default admin settings created")
+        else:
+            print("ℹ️ Admin settings already exist")
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Error creating admin user/settings: {e}")
+        print(f"❌ Error creating/updating admin user/settings: {e}")
     finally:
         db.close()
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 @app.get("/api/analytics/dashboard", response_model=UserAnalyticsResponse)
 async def get_user_analytics_dashboard(
