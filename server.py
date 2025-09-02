@@ -3049,6 +3049,12 @@ def get_all_qr_codes(admin_user: User = Depends(get_admin_user), db: Session = D
         for qr in qr_codes
     ]
 
+
+@app.get("/", response_model=dict)
+@app.head("/")
+def root():
+    return {"message": "Server is running"}
+
 @app.delete("/api/admin/qr-codes/{qr_id}")
 def delete_qr_code(
     qr_id: int,
