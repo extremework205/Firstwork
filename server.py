@@ -1246,7 +1246,7 @@ def get_admin_user(current_user: User = Depends(get_current_user)):
 # =============================================================================
 
 @app.post("/api/login")
-@limiter.limit("5/minute")  # Added rate limiting to login
+@limiter.limit("5/minute")  # Rate limiting
 async def login_user(
     request: Request,
     user_login: LoginWithTwoFA,
@@ -1255,14 +1255,14 @@ async def login_user(
     # Check if account is locked
     if is_account_locked(db, user_login.email):
         log_security_event(
-            db, None, "blocked_login_attempt", 
+            db, None, "blocked_login_attempt",
             f"Login blocked for {user_login.email} - account locked",
             request.client.host
         )
         raise HTTPException(status_code=423, detail="Account temporarily locked due to multiple failed attempts")
-    
+
     user = db.query(User).filter(User.email == user_login.email).first()
-    
+
     # Log login attempt
     login_attempt = LoginAttempt(
         email=user_login.email,
@@ -1270,20 +1270,17 @@ async def login_user(
         success=False,
         user_agent=request.headers.get("user-agent")
     )
-    
+
+    # Verify credentials
     if not user or not verify_password(user_login.password, user.password_hash):
-        # Log failed attempt
         log_security_event(
             db, user.id if user else None, "failed_login",
             f"Failed login attempt for {user_login.email}",
             request.client.host
         )
-        
         if user:
             user.failed_login_attempts += 1
             user.last_failed_login = datetime.utcnow()
-            
-            # Lock account if too many attempts
             if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
                 user.account_locked = True
                 user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
@@ -1292,11 +1289,11 @@ async def login_user(
                     f"Account locked for {user.email} due to {MAX_LOGIN_ATTEMPTS} failed attempts",
                     request.client.host
                 )
-        
         db.add(login_attempt)
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid credentials")
-    
+
+    # Suspended account check
     if user.status == UserStatus.SUSPENDED:
         log_security_event(
             db, user.id, "suspended_login_attempt",
@@ -1304,12 +1301,11 @@ async def login_user(
             request.client.host
         )
         raise HTTPException(status_code=403, detail="Account suspended")
-    
-    # Check 2FA if enabled
-    if user.two_fa_enabled:
+
+    # ✅ Optional 2FA check
+    if getattr(user, "two_fa_enabled", False):
         if not user_login.two_fa_token:
             raise HTTPException(status_code=400, detail="2FA token required")
-        
         if not verify_2fa_token(user.two_fa_secret, user_login.two_fa_token):
             log_security_event(
                 db, user.id, "failed_2fa",
@@ -1319,38 +1315,37 @@ async def login_user(
             user.failed_login_attempts += 1
             db.commit()
             raise HTTPException(status_code=400, detail="Invalid 2FA token")
-    
-    # Successful login - reset failed attempts
+
+    # Successful login
     user.failed_login_attempts = 0
     user.account_locked = False
     user.locked_until = None
     login_attempt.success = True
-    
-    # Log successful login
+
     log_activity(
         db, user.id, "USER_LOGIN",
         f"User logged in from {request.client.host}",
         request.client.host
     )
-    
+
     log_security_event(
         db, user.id, "successful_login",
         f"Successful login for {user.email}",
         request.client.host
     )
-    
+
     db.add(login_attempt)
     db.commit()
-    
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    
+
     return {
-        "access_token": access_token, 
+        "access_token": access_token,
         "token_type": "bearer",
-        "requires_2fa": user.two_fa_enabled,
+        "requires_2fa": getattr(user, "two_fa_enabled", False),
         "user": UserResponse.from_orm(user)
     }
 
