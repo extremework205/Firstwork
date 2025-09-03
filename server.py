@@ -29,6 +29,7 @@ from fastapi_utils.tasks import repeat_every
 from slowapi import Limiter, _rate_limit_exceeded_handler  # Added rate limiting
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from fastapi.staticfiles import StaticFiles
 
 # Database imports
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, UniqueConstraint, create_engine, and_, or_, func
@@ -3341,7 +3342,85 @@ def delete_qr_code(
     
     return {"message": "QR code deleted successfully"}
 
-from fastapi.staticfiles import StaticFiles
-
 # Mount static files for serving uploaded images
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+@app.post("/api/admin/upload-qr-code")
+async def upload_qr_code(
+    crypto_type: str = Form(...),
+    wallet_address: str = Form(...),
+    qr_file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        # Check if user is admin
+        if not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Validate crypto type
+        if crypto_type.lower() not in ['bitcoin', 'ethereum']:
+            raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
+        
+        # Validate file type
+        if not qr_file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File must be an image")
+        
+        # Read file content
+        file_content = await qr_file.read()
+        if len(file_content) > 5 * 1024 * 1024:  # 5MB limit
+            raise HTTPException(status_code=400, detail="File size too large. Maximum 5MB allowed")
+        
+        # Save file to blob storage or local storage
+        file_extension = qr_file.filename.split('.')[-1] if '.' in qr_file.filename else 'png'
+        filename = f"qr_{crypto_type}_{int(time.time())}.{file_extension}"
+        file_path = f"uploads/qr_codes/{filename}"
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            buffer.write(file_content)
+        
+        # Update or create QR code record in database
+        db.query(DepositQRCode).filter(DepositQRCode.crypto_type == crypto_type.lower()).delete()
+        db.commit()
+
+        qr_code = DepositQRCode(
+            crypto_type=crypto_type.lower(),
+            wallet_address=wallet_address,
+            qr_code_url=file_path,
+            is_active=True
+        )
+
+        db.add(qr_code)
+        db.commit()
+        
+        # Log admin activity
+        log_activity(
+            db, current_user.id,
+            action="qr_code_upload",
+            details=f"Uploaded QR code for {crypto_type} - {wallet_address}",
+            ip_address=request.client.host if hasattr(request, 'client') else None
+        )
+        
+        return {
+            "success": True,
+            "message": f"QR code uploaded successfully for {crypto_type}",
+            "data": {
+                "crypto_type": crypto_type,
+                "wallet_address": wallet_address,
+                "file_path": file_path
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading QR code: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/health")
+@app.head("/health")
+def health_check():
+    return {"status": "ok", "message": "Backend is awake and running"}
+    
