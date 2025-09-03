@@ -1252,18 +1252,22 @@ async def login_user(
     user_login: LoginWithTwoFA,
     db: Session = Depends(get_db)
 ):
-    # Check if account is locked
+    # 1️⃣ Check if account is locked
     if is_account_locked(db, user_login.email):
         log_security_event(
             db, None, "blocked_login_attempt",
             f"Login blocked for {user_login.email} - account locked",
             request.client.host
         )
-        raise HTTPException(status_code=423, detail="Account temporarily locked due to multiple failed attempts")
+        raise HTTPException(
+            status_code=423,
+            detail="Account temporarily locked due to multiple failed attempts"
+        )
 
+    # 2️⃣ Fetch user
     user = db.query(User).filter(User.email == user_login.email).first()
 
-    # Log login attempt
+    # 3️⃣ Log login attempt
     login_attempt = LoginAttempt(
         email=user_login.email,
         ip_address=request.client.host,
@@ -1271,7 +1275,7 @@ async def login_user(
         user_agent=request.headers.get("user-agent")
     )
 
-    # Verify credentials
+    # 4️⃣ Verify credentials
     if not user or not verify_password(user_login.password, user.password_hash):
         log_security_event(
             db, user.id if user else None, "failed_login",
@@ -1293,7 +1297,7 @@ async def login_user(
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # Suspended account check
+    # 5️⃣ Suspended account check
     if user.status == UserStatus.SUSPENDED:
         log_security_event(
             db, user.id, "suspended_login_attempt",
@@ -1302,10 +1306,8 @@ async def login_user(
         )
         raise HTTPException(status_code=403, detail="Account suspended")
 
-    # ✅ Optional 2FA check
-    if getattr(user, "two_fa_enabled", False):
-        if not user_login.two_fa_token:
-            raise HTTPException(status_code=400, detail="2FA token required")
+    # 6️⃣ Optional 2FA check (still verified if enabled)
+    if getattr(user, "two_fa_enabled", False) and user_login.two_fa_token:
         if not verify_2fa_token(user.two_fa_secret, user_login.two_fa_token):
             log_security_event(
                 db, user.id, "failed_2fa",
@@ -1316,7 +1318,7 @@ async def login_user(
             db.commit()
             raise HTTPException(status_code=400, detail="Invalid 2FA token")
 
-    # Successful login
+    # 7️⃣ Successful login - reset failed attempts
     user.failed_login_attempts = 0
     user.account_locked = False
     user.locked_until = None
@@ -1337,15 +1339,18 @@ async def login_user(
     db.add(login_attempt)
     db.commit()
 
+    # 8️⃣ Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
 
+    # 9️⃣ Return response - always require PIN verification
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "requires_2fa": getattr(user, "two_fa_enabled", False),
+        "requires_pin_verify": True,  # frontend must redirect to PIN verify
+        "requires_2fa": getattr(user, "two_fa_enabled", False),  # optional for frontend 2FA UI
         "user": UserResponse.from_orm(user)
     }
 
