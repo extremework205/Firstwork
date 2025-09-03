@@ -3507,3 +3507,9 @@ async def upload_qr_code(
     except Exception as e:
         logger.error(f"Error uploading QR code: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/health")
+@app.head("/health")
+def health_check():
+    return {"status": "ok", "message": "Backend is awake and running"}
