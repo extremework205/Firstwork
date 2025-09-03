@@ -1549,17 +1549,17 @@ async def get_security_stats(
 
 @app.post("/api/request-otp")
 @limiter.limit("3/minute")
-async def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
+async def request_otp(otp_request: OTPRequest, db: Session = Depends(get_db)):
     """Request OTP for password reset, PIN reset, or account verification"""
     try:
         # Check if user exists
-        user = db.query(User).filter(User.email == request.email).first()
+        user = db.query(User).filter(User.email == otp_request.email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
         # Check rate limiting
         recent_otps = db.query(OTP).filter(
-            OTP.email == request.email,
+            OTP.email == otp_request.email,
             OTP.created_at > datetime.utcnow() - timedelta(minutes=5)
         ).count()
         
@@ -1572,19 +1572,19 @@ async def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
         
         # Save OTP to database
         otp_record = OTP(
-            email=request.email,
+            email=otp_request.email,
             otp_code=otp_code,
-            purpose=request.purpose,
+            purpose=otp_request.purpose,
             expires_at=expires_at
         )
         db.add(otp_record)
         db.commit()
         
         # Send OTP email
-        await send_otp_email(request.email, otp_code, request.purpose)
+        await send_otp_email(otp_request.email, otp_code, otp_request.purpose)
         
         # Log security event
-        log_security_event(db, user.id, "otp_requested", f"OTP requested for {request.purpose}")
+        log_security_event(db, user.id, "otp_requested", f"OTP requested for {otp_request.purpose}")
         
         return {"message": "OTP sent successfully", "expires_in": 600}
         
