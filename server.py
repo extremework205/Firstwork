@@ -1601,13 +1601,7 @@ def login(user_data: UserLogin, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "user_id": user.user_id,
-            "email": user.email,
-            "name": user.name,
-            "is_admin": user.is_admin
-        }
+        "user": UserResponse.from_orm(user)  # ✅ Use Pydantic response model
     }
 
 @app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
