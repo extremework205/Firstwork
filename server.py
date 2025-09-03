@@ -3245,7 +3245,7 @@ async def upload_qr_code(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.on_event("startup")
+"""@app.on_event("startup")
 async def startup_event():
     """Initialize database and create admin user on startup"""
     try:
@@ -3258,4 +3258,4 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    uvicorn.run(app, host="0.0.0.0", port=10000)"""
