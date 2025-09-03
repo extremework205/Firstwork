@@ -629,39 +629,42 @@ async def send_otp_email(email: str, otp_code: str, purpose: str):
     try:
         subject = f"Your OTP Code for {purpose.replace('_', ' ').title()}"
         
-        template = env.get_template('otp_email.html')
+        template = env.get_template("otp_email.html")
         html_content = template.render(
             email_subject=subject,
             otp_code=otp_code,
             purpose=purpose
         )
         
-        # Send email using SMTP
-        import smtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
-        
+        from email.utils import formataddr
+        import smtplib, ssl
+
         msg = MIMEMultipart()
-        msg['From'] = formataddr((FROM_NAME, FROM_EMAIL))
-        msg['To'] = email
-        msg['Subject'] = subject
-        
-        msg.attach(MIMEText(html_content, 'html'))
-        
-        # Use SMTP_SSL for port 465 or SMTP with STARTTLS for port 587
-        if SMTP_PORT == 465:
-            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        msg["From"] = formataddr((FROM_NAME, FROM_EMAIL))
+        msg["To"] = email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(html_content, "html"))
+
+        # Ensure SMTP_PORT is int
+        port = int(SMTP_PORT)
+
+        if port == 465:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(SMTP_SERVER, port, context=context) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
         else:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-            server.starttls()
-        
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
+            with smtplib.SMTP(SMTP_SERVER, port) as server:
+                server.ehlo()
+                server.starttls(context=ssl.create_default_context())
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+
         logger.info(f"OTP email sent successfully to {email}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to send OTP email to {email}: {e}")
         raise HTTPException(status_code=500, detail="Failed to send OTP email")
