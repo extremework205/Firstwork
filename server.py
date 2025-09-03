@@ -570,18 +570,23 @@ def log_security_event(db: Session, user_id: Optional[int], event_type: str, det
     db.add(security_log)
     db.commit()
 
-def is_account_locked(user: User) -> bool:
-    """Check if user account is locked"""
+def is_account_locked(user: User, db: Session) -> bool:
+    """Check if user account is locked due to failed login attempts"""
+    if not user:
+        return False
+
     if user.account_locked and user.locked_until:
         if datetime.utcnow() < user.locked_until.replace(tzinfo=None):
             return True
         else:
-            # Unlock account if lock period has expired
+            # Unlock account if lockout period has expired
             user.account_locked = False
             user.locked_until = None
             user.failed_login_attempts = 0
+            db.commit()
+    
     return False
-
+    
 def generate_user_id():
     """Generate a unique 10-digit user ID"""
     # Generate 10-digit number (no leading zero)
@@ -613,23 +618,6 @@ def check_rate_limit(identifier: str, max_requests: int, window_seconds: int) ->
     if len(RATE_LIMIT_STORAGE[identifier]) < max_requests:
         RATE_LIMIT_STORAGE[identifier].append(now)
         return True
-    return False
-
-def is_account_locked(db: Session, email: str) -> bool:
-    """Check if account is locked due to failed login attempts"""
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        return False
-    
-    if user.account_locked and user.locked_until:
-        if datetime.utcnow() < user.locked_until:
-            return True
-        else:
-            # Unlock account if lockout period has expired
-            user.account_locked = False
-            user.locked_until = None
-            db.commit()
-    
     return False
 
 async def send_otp_email(email: str, otp_code: str, purpose: str):
