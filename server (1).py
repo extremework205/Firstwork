@@ -1,0 +1,2500 @@
+import os
+import secrets
+import string
+import smtplib
+import hashlib
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import List, Optional
+from enum import Enum
+import pytz # Import pytz for timezone handling
+import requests
+import json
+import hmac
+import httpx
+import pyotp  # Added for 2FA support
+from collections import defaultdict
+import time
+import logging
+import random
+
+# FastAPI and related imports
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Query, Form, UploadFile, File
+from fastapi.security import HTTPBearer
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi import Header
+from fastapi.responses import RedirectResponse
+from fastapi_utils.tasks import repeat_every
+from slowapi import Limiter, _rate_limit_exceeded_handler  # Added rate limiting
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi.staticfiles import StaticFiles
+
+# Database imports
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, UniqueConstraint, create_engine, and_, or_, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker, Session
+from sqlalchemy.types import DECIMAL as SQLDecimal
+from sqlalchemy.orm import joinedload
+from sqlalchemy import func
+from fastapi import APIRouter  # Needed to create a router
+from sqlalchemy import exists
+
+# Authentication imports
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+
+# Email imports
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.utils import formataddr
+
+# Pydantic imports
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
+from jinja2 import Environment, FileSystemLoader
+
+logger = logging.getLogger("uvicorn.error")
+
+# =============================================================================
+# CONFIGURATION & CONSTANTS
+# =============================================================================
+required_env_vars = [
+    "DATABASE_URL",
+    "SECRET_KEY",
+    "SMTP_SERVER",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "FROM_EMAIL",
+    "FROM_NAME",
+    "BASE_URL",
+    "FRONTEND_BASE_URL",
+    "ADMIN_EMAIL",
+    "ADMIN_PASSWORD",
+    "ADMIN_PIN",
+    "APP_SECRET"
+]
+
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+# Database Configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 30
+RATE_LIMIT_STORAGE = defaultdict(list)
+
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USERNAME)
+FROM_NAME = os.getenv("FROM_NAME")
+BASE_URL = os.getenv("BASE_URL")
+APP_SECRET = os.getenv("APP_SECRET")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL")
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_PIN = os.getenv("ADMIN_PIN")
+
+# =============================================================================
+# DATABASE SETUP
+# =============================================================================
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
+# =============================================================================
+# ENUMS
+# =============================================================================
+
+class UserStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    SUSPENDED = "suspended"
+    REJECTED = "rejected"
+
+class WithdrawalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PROCESSED = "processed"
+
+class CryptoType(str, Enum):
+    BITCOIN = "bitcoin"
+    ETHEREUM = "ethereum"
+
+class DepositStatus(str, Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+# =============================================================================
+# DATABASE MODELS (Ordered to resolve forward references)
+# =============================================================================
+
+class AdminSettings(Base):
+    __tablename__ = "admin_settings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    bitcoin_rate_usd = Column(SQLDecimal(10, 2), default=50000.00)  # Bitcoin price in USD
+    ethereum_rate_usd = Column(SQLDecimal(10, 2), default=3000.00)  # Ethereum price in USD
+    global_mining_rate = Column(Float, default=0.70)  # Default 70% mining rate
+    bitcoin_deposit_qr = Column(String, nullable=True)  # QR code image path
+    ethereum_deposit_qr = Column(String, nullable=True)  # QR code image path
+    bitcoin_wallet_address = Column(String, nullable=True)
+    ethereum_wallet_address = Column(String, nullable=True)
+    referral_reward_enabled = Column(Boolean, default=True)
+    referral_reward_type = Column(String, default="bitcoin")  # bitcoin or ethereum
+    referral_reward_amount = Column(SQLDecimal(18, 8), default=0.001)  # Default reward amount
+    referrer_reward_amount = Column(SQLDecimal(18, 8), default=0.001)  # Reward for referrer
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(10), unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=False)
+    pin_hash = Column(String, nullable=False)
+    status = Column(String, default=UserStatus.PENDING)
+    is_admin = Column(Boolean, default=False)
+    is_agent = Column(Boolean, default=False)
+    is_flagged = Column(Boolean, default=False)
+    usd_balance = Column(SQLDecimal(10, 2), default=0)
+    referral_code = Column(String, unique=True, nullable=True)
+    referred_by_code = Column(String, nullable=True)
+    email_verified = Column(Boolean, default=False)
+    birthday_day = Column(Integer, nullable=True)
+    birthday_month = Column(Integer, nullable=True)
+    birthday_year = Column(Integer, nullable=True)
+    gender = Column(String(1), nullable=True)
+    user_country_code = Column(String(2), nullable=True)
+    zip_code = Column(String, nullable=True)
+    bitcoin_wallet = Column(String, nullable=True)
+    ethereum_wallet = Column(String, nullable=True)
+    bitcoin_balance = Column(SQLDecimal(18, 8), default=0)
+    ethereum_balance = Column(SQLDecimal(18, 8), default=0)
+    personal_mining_rate = Column(Float, nullable=True)  # Personal rate set by admin
+    two_fa_secret = Column(String, nullable=True)
+    two_fa_enabled = Column(Boolean, default=False)
+    account_locked = Column(Boolean, default=False)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+    failed_login_attempts = Column(Integer, default=0)
+    last_failed_login = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    devices = relationship("UserDevice", back_populates="user")
+    sent_transfers = relationship("CryptoTransfer", foreign_keys="CryptoTransfer.from_user_id", back_populates="from_user")
+    received_transfers = relationship("CryptoTransfer", foreign_keys="CryptoTransfer.to_user_id", back_populates="to_user")
+    withdrawals = relationship("Withdrawal", back_populates="user", foreign_keys="Withdrawal.user_id")
+    approvals = relationship("UserApproval", back_populates="user", foreign_keys="UserApproval.user_id")
+    activity_logs = relationship("ActivityLog", back_populates="user", cascade="all, delete-orphan")
+    deposits = relationship("CryptoDeposit", back_populates="user", foreign_keys="CryptoDeposit.user_id")
+    confirmed_deposits = relationship("CryptoDeposit", back_populates="confirmed_by_user", foreign_keys="CryptoDeposit.confirmed_by")
+    mining_sessions = relationship("MiningSession", back_populates="user")
+
+class ReferralReward(Base):
+    __tablename__ = "referral_rewards"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    referred_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reward_type = Column(String, nullable=False)  # bitcoin or ethereum
+    reward_amount = Column(SQLDecimal(18, 8), nullable=False)
+    status = Column(String, default="pending")  # pending, paid
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    
+    referrer = relationship("User", foreign_keys=[referrer_id])
+    referred = relationship("User", foreign_keys=[referred_id])
+
+class EmailNotification(Base):
+    __tablename__ = "email_notifications"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    email = Column(String, nullable=False)
+    subject = Column(String, nullable=False)
+    template_type = Column(String, nullable=False)  # deposit_confirmed, login_alert, etc.
+    status = Column(String, default="pending")  # pending, sent, failed
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+    attempts = Column(Integer, default=0)
+    scheduled_for = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")
+
+class TransactionHistory(Base):
+    __tablename__ = "transaction_history"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    transaction_type = Column(String, nullable=False)  # deposit, withdrawal, transfer, mining, referral_reward
+    crypto_type = Column(String, nullable=True)  # bitcoin, ethereum
+    amount = Column(SQLDecimal(18, 8), nullable=False)
+    description = Column(String, nullable=False)
+    reference_id = Column(String, nullable=True)  # Reference to related record
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String, nullable=False)
+    target_type = Column(String, nullable=True)  # user, deposit, settings, etc.
+    target_id = Column(String, nullable=True)
+    details = Column(Text, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    before_value = Column(Text, nullable=True)
+    after_value = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    admin = relationship("User")
+
+class CryptoDeposit(Base):
+    __tablename__ = "crypto_deposits"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    amount = Column(SQLDecimal(18, 8), nullable=False)  # crypto amount
+    usd_amount = Column(SQLDecimal(18, 2), nullable=False)  # USD equivalent
+    status = Column(String, default=DepositStatus.PENDING)
+    transaction_hash = Column(String, nullable=True)
+    evidence_url = Column(String, nullable=True)  # URL to uploaded evidence
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="deposits", foreign_keys=[user_id])
+    confirmed_by_user = relationship("User", back_populates="confirmed_deposits", foreign_keys=[confirmed_by])
+    
+class MiningRate(Base):
+    __tablename__ = "mining_rates"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    global_rate = Column(Float, nullable=False)  # Global mining rate percentage
+    duration_hours = Column(Integer, default=24)  # Duration for the rate
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class DepositQRCode(Base):
+    __tablename__ = "deposit_qr_codes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    qr_code_url = Column(String, nullable=False)  # URL to uploaded QR code image
+    wallet_address = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class UserDevice(Base):
+    __tablename__ = "user_devices"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    device_fingerprint = Column(String, nullable=False)
+    ip_address = Column(String, nullable=False)
+    user_agent = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", back_populates="devices")
+    
+    __table_args__ = (UniqueConstraint('user_id', 'device_fingerprint', name='unique_user_device'),)
+
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String, nullable=False)  # e.g., "USER_LOGIN", "DEPOSIT_MADE"
+    details = Column(Text)
+    ip_address = Column(String)
+    user_agent = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="activity_logs")
+
+class SecurityLog(Base):
+    __tablename__ = "security_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    event_type = Column(String, nullable=False)  # failed_login, successful_login, 2fa_enabled, etc.
+    details = Column(Text, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")
+
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False)
+    ip_address = Column(String, nullable=False)
+    success = Column(Boolean, nullable=False)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class FraudFlag(Base):
+    __tablename__ = "fraud_flags"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reason = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", backref="fraud_flag")
+
+class OTP(Base):
+    __tablename__ = "otps"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False)
+    otp_code = Column(String, nullable=False)
+    purpose = Column(String, nullable=False) # signup, password_reset, pin_reset
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class CryptoTransfer(Base):
+    __tablename__ = "crypto_transfers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    from_user_id = Column(Integer, ForeignKey("users.id"))
+    to_user_id = Column(Integer, ForeignKey("users.id"))
+    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    amount = Column(SQLDecimal(18, 8), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    from_user = relationship("User", foreign_keys=[from_user_id], back_populates="sent_transfers")
+    to_user = relationship("User", foreign_keys=[to_user_id], back_populates="received_transfers")
+
+class MiningSession(Base):
+    __tablename__ = "mining_sessions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    deposit_id = Column(Integer, ForeignKey("crypto_deposits.id"), nullable=False)
+    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    deposited_amount = Column(SQLDecimal(18, 8), nullable=False)
+    mining_rate = Column(Float, nullable=False)  # Rate used for this session
+    mined_amount = Column(SQLDecimal(18, 8), default=0)
+    is_active = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    last_processed = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="mining_sessions")
+
+class Withdrawal(Base):
+    __tablename__ = "withdrawals"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    crypto_type = Column(String, nullable=False)
+    amount = Column(SQLDecimal(18, 8), nullable=False)
+    wallet_address = Column(String, nullable=False)
+    status = Column(String, default=WithdrawalStatus.PENDING)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    user = relationship("User", back_populates="withdrawals")
+
+class UserApproval(Base):
+    __tablename__ = "user_approvals"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    approved_by = Column(Integer, ForeignKey("users.id"))
+    status = Column(String, nullable=False)
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", foreign_keys=[user_id], back_populates="approvals")
+
+# =============================================================================
+# EMAIL SERVICE
+# =============================================================================
+
+class EmailService:
+    def __init__(self):
+        self.smtp_server = SMTP_SERVER
+        self.smtp_port = SMTP_PORT
+        self.smtp_username = SMTP_USERNAME
+        self.smtp_password = SMTP_PASSWORD
+        self.from_email = FROM_EMAIL
+        self.from_name = FROM_NAME
+
+    def send_email(self, to_email: str, subject: str, body: str, is_html: bool = False):
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = formataddr((self.from_name, self.from_email))
+            msg['To'] = to_email
+            msg['Subject'] = subject
+
+            msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
+
+            if int(self.smtp_port) == 465:
+                # SSL mode
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
+            else:
+                # STARTTLS mode (common for port 587)
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            return False
+
+    def send_otp_email(self, to_email: str, otp_code: str, purpose: str):
+        subject = f"Your OTP Code for {purpose.replace('_', ' ').title()}"
+        template = env.get_template('otp_email.html')
+        body = template.render(
+            email_subject=subject,
+            otp_code=otp_code,
+            purpose=purpose.replace('_', ' ').title()
+        )
+        return self.send_email(to_email, subject, body, is_html=True)
+
+    def send_agent_approval_email(self, agent_email: str, user_name: str, user_email: str, approval_token: str):
+        approve_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=approve"
+        reject_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=reject"
+
+        subject = "New User Approval Request"
+        template = env.get_template('agent_approval.html')
+        body = template.render(
+            user_name=user_name,
+            user_email=user_email,
+            approve_url=approve_url,
+            reject_url=reject_url
+        )
+        return self.send_email(agent_email, subject, body, is_html=True)
+
+# Initialize email service
+email_service = EmailService()
+
+# =============================================================================
+# UTILITY FUNCTIONS (Defined before use)
+# =============================================================================
+
+def generate_user_id():
+    """Generate a unique 10-digit user ID"""
+    # Generate 10-digit number (no leading zero)
+    return ''.join([str(random.randint(1, 9))] + [str(random.randint(0, 9)) for _ in range(9)])
+
+def generate_otp():
+    return ''.join(secrets.choice(string.digits) for _ in range(6))
+
+def generate_referral_code():
+    """Generate a unique referral code"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+def generate_2fa_secret():
+    """Generate a new 2FA secret key"""
+    return pyotp.random_base32()
+
+def verify_2fa_token(secret: str, token: str) -> bool:
+    """Verify 2FA token"""
+    totp = pyotp.TOTP(secret)
+    return totp.verify(token, valid_window=1)
+
+def get_2fa_qr_url(secret: str, email: str, issuer: str = "Crypto Mining Platform") -> str:
+    """Generate QR code URL for 2FA setup"""
+    totp = pyotp.TOTP(secret)
+    return totp.provisioning_uri(email, issuer_name=issuer)
+
+def check_rate_limit(identifier: str, max_requests: int, window_seconds: int) -> bool:
+    """Check if request is within rate limit"""
+    now = time.time()
+    requests = RATE_LIMIT_STORAGE[identifier]
+    
+    # Remove old requests outside the window
+    RATE_LIMIT_STORAGE[identifier] = [req_time for req_time in requests if now - req_time < window_seconds]
+    
+    # Check if under limit
+    if len(RATE_LIMIT_STORAGE[identifier]) < max_requests:
+        RATE_LIMIT_STORAGE[identifier].append(now)
+        return True
+    return False
+
+def log_security_event(db: Session, user_id: Optional[int], event_type: str, details: str, ip_address: str = None):
+    """Log security-related events"""
+    security_log = SecurityLog(
+        user_id=user_id,
+        event_type=event_type,
+        details=details,
+        ip_address=ip_address
+    )
+    db.add(security_log)
+    db.commit()
+
+def is_account_locked(db: Session, email: str) -> bool:
+    """Check if account is locked due to failed login attempts"""
+    lockout_time = datetime.utcnow() - timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+    
+    failed_attempts = db.query(SecurityLog).filter(
+        SecurityLog.event_type == "failed_login",
+        SecurityLog.details.contains(email),
+        SecurityLog.created_at > lockout_time
+    ).count()
+    
+    return failed_attempts >= MAX_LOGIN_ATTEMPTS
+
+def get_admin_settings(db: Session):
+    """Get or create admin settings"""
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        settings = AdminSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+def calculate_usd_values(user: User, admin_settings: AdminSettings):
+    """Calculate USD values for user's crypto balances"""
+    bitcoin_balance_usd = user.bitcoin_balance * admin_settings.bitcoin_rate_usd
+    ethereum_balance_usd = user.ethereum_balance * admin_settings.ethereum_rate_usd
+    total_balance_usd = bitcoin_balance_usd + ethereum_balance_usd
+    
+    return {
+        "bitcoin_balance_usd": bitcoin_balance_usd,
+        "ethereum_balance_usd": ethereum_balance_usd,
+        "total_balance_usd": total_balance_usd
+    }
+
+def log_activity(db: Session, user_id: int, action: str, details: str = None, ip_address: str = None):
+    """Log user activity"""
+    activity = ActivityLog(
+        user_id=user_id,
+        action=action,
+        details=details,
+        ip_address=ip_address
+    )
+    db.add(activity)
+    db.commit()
+
+def log_transaction(db: Session, user_id: int, transaction_type: str, crypto_type: str, amount: Decimal, description: str, reference_id: str = None):
+    """Log transaction history"""
+    transaction = TransactionHistory(
+        user_id=user_id,
+        transaction_type=transaction_type,
+        crypto_type=crypto_type,
+        amount=amount,
+        description=description,
+        reference_id=reference_id
+    )
+    db.add(transaction)
+    db.commit()
+
+def log_admin_action(
+    db: Session,
+    admin_id: int,
+    action: str,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    details: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    before_value: Optional[str] = None,
+    after_value: Optional[str] = None
+):
+    """Log admin actions for audit trail"""
+    audit_log = AdminAuditLog(
+        admin_id=admin_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        details=details,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        before_value=before_value,
+        after_value=after_value
+    )
+    db.add(audit_log)
+    db.commit()
+
+def process_referral_rewards(db: Session, new_user: User):
+    """Process referral rewards when a new user registers with a referral code"""
+    if not new_user.referred_by_code:
+        return
+    
+    # Find the referrer
+    referrer = db.query(User).filter(User.referral_code == new_user.referred_by_code).first()
+    if not referrer:
+        return
+    
+    # Get admin settings for referral rewards
+    settings = get_admin_settings(db)
+    if not settings.referral_reward_enabled:
+        return
+    
+    # Create referral reward for the referrer
+    referrer_reward = ReferralReward(
+        referrer_id=referrer.id,
+        referred_id=new_user.id,
+        reward_type=settings.referral_reward_type,
+        reward_amount=settings.referrer_reward_amount,
+        status="paid"
+    )
+    db.add(referrer_reward)
+    
+    # Add reward to referrer's balance
+    if settings.referral_reward_type == "bitcoin":
+        referrer.bitcoin_balance += settings.referrer_reward_amount
+    else:
+        referrer.ethereum_balance += settings.referrer_reward_amount
+    
+    # Create referral reward for the new user (referred)
+    referred_reward = ReferralReward(
+        referrer_id=referrer.id,
+        referred_id=new_user.id,
+        reward_type=settings.referral_reward_type,
+        reward_amount=settings.referral_reward_amount,
+        status="paid"
+    )
+    db.add(referred_reward)
+    
+    # Add reward to new user's balance
+    if settings.referral_reward_type == "bitcoin":
+        new_user.bitcoin_balance += settings.referrer_reward_amount
+    else:
+        new_user.ethereum_balance += settings.referrer_reward_amount
+    
+    # Log transactions for both users
+    log_transaction(
+        db=db,
+        user_id=referrer.id,
+        transaction_type="referral_reward",
+        crypto_type=settings.referral_reward_type,
+        amount=settings.referrer_reward_amount,
+        description=f"Referral reward for referring user {new_user.user_id}"
+    )
+    
+    log_transaction(
+        db=db,
+        user_id=new_user.id,
+        transaction_type="referral_reward",
+        crypto_type=settings.referral_reward_type,
+        amount=settings.referral_reward_amount,
+        description=f"Welcome bonus for using referral code {new_user.referred_by_code}"
+    )
+    
+    db.commit()
+
+async def send_email_notification(
+    email: str,
+    subject: str,
+    template_type: str,
+    context: dict,
+    db: Session,
+    user_id: Optional[int] = None,
+    attachment_path: Optional[str] = None
+):
+    """Queue email notification for background processing"""
+    try:
+        # Get template and render
+        template = env.get_template(f'{template_type}.html')
+        html_content = template.render(**context)
+        
+        # Create email notification record
+        notification = EmailNotification(
+            user_id=user_id,
+            email=email,
+            subject=subject,
+            template_type=template_type,
+            status="pending"
+        )
+        
+        db.add(notification)
+        db.commit()
+        
+        # Send immediately for now (in production, use background queue)
+        success = email_service.send_email(email, subject, html_content, is_html=True)
+        
+        if success:
+            notification.status = "sent"
+            notification.sent_at = datetime.utcnow()
+        else:
+            notification.status = "failed"
+            notification.error_message = "Failed to send email"
+        
+        db.commit()
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error sending email notification: {str(e)}")
+        if 'notification' in locals():
+            notification.status = "failed"
+            notification.error_message = str(e)
+            db.commit()
+        return False
+
+# =============================================================================
+# AUTHENTICATION SETUP
+# =============================================================================
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_current_user(token: str = Depends(security), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+def get_admin_user(current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+# =============================================================================
+# PYDANTIC SCHEMAS (Ordered to resolve forward references)
+# =============================================================================
+
+# Base schemas first
+class BasicUserInfo(BaseModel):
+    id: int
+    email: str
+    name: str
+
+    class Config:
+        from_attributes = True
+
+# User Schemas
+class UserBase(BaseModel):
+    email: EmailStr
+    name: str
+
+class UserCreate(UserBase):
+    password: str
+    pin: str
+    referral_code: Optional[str] = None
+    device_fingerprint: str
+    ip_address: str
+    user_agent: Optional[str] = None
+    birthday_day: Optional[int] = None
+    birthday_month: Optional[int] = None
+    birthday_year: Optional[int] = None
+    gender: Optional[str] = None
+    user_country_code: Optional[str] = None
+    zip_code: Optional[str] = None
+    bitcoin_wallet: Optional[str] = None
+    ethereum_wallet: Optional[str] = None
+
+class UserResponse(UserBase):
+    id: int
+    user_id: str
+    name: str
+    status: UserStatus
+    is_admin: bool
+    is_agent: bool
+    is_flagged: bool
+    usd_balance: Decimal
+    bitcoin_balance: Decimal
+    ethereum_balance: Decimal
+    bitcoin_balance_usd: Optional[Decimal] = None
+    ethereum_balance_usd: Optional[Decimal] = None
+    total_balance_usd: Optional[Decimal] = None
+    bitcoin_wallet: Optional[str] = None
+    ethereum_wallet: Optional[str] = None
+    personal_mining_rate: Optional[float] = None
+    referral_code: Optional[str]
+    email_verified: bool
+    birthday_day: Optional[int] = None
+    birthday_month: Optional[int] = None
+    birthday_year: Optional[int] = None
+    gender: Optional[str] = None
+    user_country_code: Optional[str] = None
+    zip_code: Optional[str] = None
+    created_at: datetime
+    referred_users_count: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+# Authentication Schemas
+class UserLogin(BaseModel):
+    email: str
+    password: str
+    device_fingerprint: str = None
+    ip_address: str = None
+    user_agent: str = None
+
+class LoginWithTwoFA(BaseModel):
+    email: str
+    password: str
+    two_fa_token: Optional[str] = None
+    device_fingerprint: str = None
+    ip_address: str = None
+    user_agent: str = None
+
+class UserPinVerify(BaseModel):
+    pin: str
+
+# Password and PIN Schemas
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+class PinChangeRequest(BaseModel):
+    current_pin: str
+    new_pin: str
+
+class PasswordResetRequest(BaseModel):
+    email: str
+    otp_code: str
+    new_password: str
+
+class PinResetRequest(BaseModel):
+    email: str
+    otp_code: str
+    new_pin: str
+
+# 2FA Schemas
+class TwoFASetupResponse(BaseModel):
+    secret: str
+    qr_code_url: str
+    backup_codes: List[str]
+
+class TwoFAVerifyRequest(BaseModel):
+    token: str
+
+class TwoFAStatusResponse(BaseModel):
+    enabled: bool
+    backup_codes_remaining: Optional[int] = None
+
+class SecuritySettingsResponse(BaseModel):
+    two_fa_enabled: bool
+    account_locked: bool
+    failed_login_attempts: int
+    last_login: Optional[datetime] = None
+
+# OTP Schemas
+class OTPRequest(BaseModel):
+    email: EmailStr
+    purpose: str
+
+class OTPVerify(BaseModel):
+    email: EmailStr
+    otp_code: str
+    purpose: str
+
+# Crypto Transfer Schemas
+class CryptoTransferCreate(BaseModel):
+    to_email: Optional[EmailStr] = None
+    to_user_id: Optional[str] = None
+    crypto_type: CryptoType
+    amount: Decimal
+
+    @field_validator('amount')
+    def amount_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError('Amount must be positive')
+        return v
+
+    @model_validator(mode="after")
+    def either_email_or_user_id(self):
+        # self is the model instance
+        if not self.to_email and not self.to_user_id:
+            raise ValueError('Either to_email or to_user_id must be provided')
+        if self.to_email and self.to_user_id:
+            raise ValueError('Provide either to_email or to_user_id, not both')
+        return self
+
+class CryptoTransferResponse(BaseModel):
+    id: int
+    crypto_type: str
+    amount: Decimal
+    created_at: datetime
+    from_user: BasicUserInfo
+    to_user: BasicUserInfo
+
+    class Config:
+        from_attributes = True
+
+# Deposit Schemas
+class DepositCreate(BaseModel):
+    crypto_type: CryptoType
+    amount: Optional[Decimal] = None  # crypto amount
+    usd_amount: Optional[Decimal] = None  # USD amount
+    transaction_hash: Optional[str] = None
+
+class DepositEvidenceUpload(BaseModel):
+    deposit_id: int
+    evidence_file: str  # base64 encoded image or file URL
+
+class DepositResponse(BaseModel):
+    id: int
+    crypto_type: str
+    amount: Decimal
+    usd_amount: Decimal
+    status: str
+    qr_code_url: str
+    wallet_address: str
+
+    class Config:
+        from_attributes = True
+
+# Withdrawal Schemas
+class WithdrawalCreate(BaseModel):
+    crypto_type: CryptoType
+    amount: Decimal
+    wallet_address: str
+    
+    @field_validator('amount')
+    def amount_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError('Amount must be positive')
+        return v
+
+class WithdrawalResponse(BaseModel):
+    id: int
+    crypto_type: str
+    amount: Decimal
+    status: WithdrawalStatus
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AdminWithdrawalResponse(BaseModel):
+    id: int
+    crypto_type: str
+    amount: Decimal
+    status: WithdrawalStatus
+    created_at: datetime
+    user_id: int
+    user_email: str
+    wallet_address: str
+
+    class Config:
+        from_attributes = True
+
+# Mining Schemas
+class MiningRateCreate(BaseModel):
+    crypto_type: CryptoType
+    global_rate: float
+    duration_hours: int = 24
+
+class MiningRateResponse(BaseModel):
+    id: int
+    crypto_type: str
+    global_rate: float
+    duration_hours: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+# QR Code Schemas
+class QRCodeCreate(BaseModel):
+    crypto_type: CryptoType
+    qr_code_url: str
+    wallet_address: str
+
+class QRCodeResponse(BaseModel):
+    id: int
+    crypto_type: str
+    qr_code_url: str
+    wallet_address: str
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+# Admin Schemas
+class UserStatusUpdate(BaseModel):
+    status: UserStatus
+
+class AgentAssignment(BaseModel):
+    user_id: int
+    is_agent: bool
+
+class SystemSettingUpdate(BaseModel):
+    key: str
+    value: str
+    description: Optional[str] = None
+
+class BulkUserStatusUpdate(BaseModel):
+    user_ids: List[int]
+    status: UserStatus
+
+class AdminSettingsResponse(BaseModel):
+    bitcoin_rate_usd: Decimal
+    ethereum_rate_usd: Decimal
+    global_mining_rate: float
+    bitcoin_deposit_qr: Optional[str] = None
+    ethereum_deposit_qr: Optional[str] = None
+    bitcoin_wallet_address: Optional[str] = None
+    ethereum_wallet_address: Optional[str] = None
+    referral_reward_enabled: bool
+    referral_reward_type: str
+    referral_reward_amount: Decimal
+    referrer_reward_amount: Decimal
+
+class AdminSettingsUpdate(BaseModel):
+    bitcoin_rate_usd: Optional[Decimal] = None
+    ethereum_rate_usd: Optional[Decimal] = None
+    global_mining_rate: Optional[float] = None
+    bitcoin_wallet_address: Optional[str] = None
+    ethereum_wallet_address: Optional[str] = None
+    referral_reward_enabled: Optional[bool] = None
+    referral_reward_type: Optional[str] = None
+    referral_reward_amount: Optional[Decimal] = None
+    referrer_reward_amount: Optional[Decimal] = None
+
+class AdminCryptoTransferRequest(BaseModel):
+    from_user_email: Optional[EmailStr] = None
+    to_user_email: EmailStr
+    crypto_type: CryptoType
+    amount: Decimal
+
+    @field_validator("amount")
+    def validate_amount(cls, v):
+        if v <= 0:
+            raise ValueError("Amount must be greater than 0")
+        return v
+
+# Transaction and History Schemas
+class TransactionHistoryResponse(BaseModel):
+    id: int
+    transaction_type: str
+    crypto_type: Optional[str] = None
+    amount: Decimal
+    description: str
+    reference_id: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class TransactionFilter(BaseModel):
+    transaction_type: Optional[str] = None
+    crypto_type: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    min_amount: Optional[Decimal] = None
+    max_amount: Optional[Decimal] = None
+
+class AdminAuditLogResponse(BaseModel):
+    id: int
+    admin_id: int
+    admin_name: str
+    admin_email: str
+    action: str
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    details: Optional[str] = None
+    ip_address: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# Referral Schemas
+class ReferralRewardResponse(BaseModel):
+    id: int
+    referrer_id: int
+    referred_id: int
+    reward_type: str
+    reward_amount: Decimal
+    status: str
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+
+# Fraud and Security Schemas
+class FraudFlagResponse(BaseModel):
+    user: BasicUserInfo
+    reason: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class FraudRuleUpdate(BaseModel):
+    rule_key: str
+    limit_value: int
+    action: str
+    description: Optional[str] = None
+
+class FraudRulePatch(BaseModel):
+    limit_value: int
+    action: str
+
+# Dashboard and Analytics Schemas
+class DashboardStats(BaseModel):
+    usd_balance: Decimal
+    bitcoin_balance: Decimal
+    ethereum_balance: Decimal
+    active_mining_sessions: int
+    total_deposits: int
+    pending_withdrawals: int
+    is_flagged: bool
+
+class AdminDashboardStats(BaseModel):
+    total_users: int
+    total_deposits: int
+    total_crypto_distributed: Decimal
+    pending_withdrawals: int
+    active_mining_sessions: int
+
+class TransferHistory(BaseModel):
+    transfers: List[CryptoTransferResponse]
+
+class UserAnalyticsResponse(BaseModel):
+    portfolio_overview: dict
+    mining_performance: dict
+    earnings_history: dict
+    transaction_analytics: dict
+    referral_performance: dict
+    growth_metrics: dict
+
+class MiningPerformanceData(BaseModel):
+    daily_earnings: List[dict]
+    weekly_summary: dict
+    monthly_trends: dict
+    efficiency_metrics: dict
+
+class PortfolioAnalytics(BaseModel):
+    current_value: dict
+    historical_performance: List[dict]
+    asset_allocation: dict
+    growth_rate: dict
+
+class EarningsBreakdown(BaseModel):
+    mining_earnings: Decimal
+    referral_earnings: Decimal
+    total_earnings: Decimal
+    earnings_by_period: List[dict]
+
+# =============================================================================
+# FASTAPI APPLICATION SETUP
+# =============================================================================
+
+env = Environment(loader=FileSystemLoader('template'))
+
+limiter = Limiter(key_func=get_remote_address)
+
+app = FastAPI(
+    title="Crypto Mining API",
+    description="Crypto Mining Platform API Backend",
+    version="1.0.0",
+    docs_url=None,       # Disable Swagger UI (/docs)
+    redoc_url=None,      # Disable ReDoc (/redoc)
+    openapi_url=None     # Disable OpenAPI schema (/openapi.json)
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://cryptomining.com",
+        "https://api.cryptomining.com",
+        "https://mining-frontend.netlify.app",
+        "https://chainminer.onrender.com",
+        "https://chainminer.netlify.app"
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["*"],
+)
+
+# =============================================================================
+# ENHANCED AUTHENTICATION ENDPOINTS
+# =============================================================================
+
+@app.post("/api/login")
+@limiter.limit("5/minute")  # Rate limiting
+async def login_user(
+    request: Request,
+    user_login: LoginWithTwoFA,
+    db: Session = Depends(get_db)
+):
+    # 1️⃣ Check if account is locked
+    if is_account_locked(db, user_login.email):
+        log_security_event(
+            db, None, "blocked_login_attempt",
+            f"Login blocked for {user_login.email} - account locked",
+            request.client.host
+        )
+        raise HTTPException(
+            status_code=423,
+            detail="Account temporarily locked due to multiple failed attempts"
+        )
+
+    # 2️⃣ Fetch user
+    user = db.query(User).filter(User.email == user_login.email).first()
+
+    # 3️⃣ Log login attempt
+    login_attempt = LoginAttempt(
+        email=user_login.email,
+        ip_address=request.client.host,
+        success=False,
+        user_agent=request.headers.get("user-agent")
+    )
+
+    # 4️⃣ Verify credentials
+    if not user or not verify_password(user_login.password, user.password_hash):
+        log_security_event(
+            db, user.id if user else None, "failed_login",
+            f"Failed login attempt for {user_login.email}",
+            request.client.host
+        )
+        if user:
+            user.failed_login_attempts += 1
+            user.last_failed_login = datetime.utcnow()
+            if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
+                user.account_locked = True
+                user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+                log_security_event(
+                    db, user.id, "account_locked",
+                    f"Account locked for {user.email} due to {MAX_LOGIN_ATTEMPTS} failed attempts",
+                    request.client.host
+                )
+        db.add(login_attempt)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # 5️⃣ Suspended account check
+    if user.status == UserStatus.SUSPENDED:
+        log_security_event(
+            db, user.id, "suspended_login_attempt",
+            f"Login attempt by suspended user {user.email}",
+            request.client.host
+        )
+        raise HTTPException(status_code=403, detail="Account suspended")
+
+    # 6️⃣ Optional 2FA check (still verified if enabled)
+    if getattr(user, "two_fa_enabled", False) and user_login.two_fa_token:
+        if not verify_2fa_token(user.two_fa_secret, user_login.two_fa_token):
+            log_security_event(
+                db, user.id, "failed_2fa",
+                f"Failed 2FA verification for {user.email}",
+                request.client.host
+            )
+            user.failed_login_attempts += 1
+            db.commit()
+            raise HTTPException(status_code=400, detail="Invalid 2FA token")
+
+    # 7️⃣ Successful login - reset failed attempts
+    user.failed_login_attempts = 0
+    user.account_locked = False
+    user.locked_until = None
+    login_attempt.success = True
+
+    log_activity(
+        db, user.id, "USER_LOGIN",
+        f"User logged in from {request.client.host}",
+        request.client.host
+    )
+
+    log_security_event(
+        db, user.id, "successful_login",
+        f"Successful login for {user.email}",
+        request.client.host
+    )
+
+    db.add(login_attempt)
+    db.commit()
+
+    # 8️⃣ Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
+    # 9️⃣ Return response - always require PIN verification
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "requires_pin_verify": True,  # frontend must redirect to PIN verify
+        "requires_2fa": getattr(user, "two_fa_enabled", False),  # optional for frontend 2FA UI
+        "user": UserResponse.from_orm(user)
+    }
+
+@app.post("/api/register")
+async def register_user(
+    request: Request,
+    user_data: UserCreate,
+    db: Session = Depends(get_db)
+):
+    """Register a new user with comprehensive validation"""
+    try:
+        # Check if user already exists
+        existing_user = db.query(User).filter(User.email == user_data.email).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Validate referral code if provided
+        referrer = None
+        if user_data.referral_code:
+            referrer = db.query(User).filter(User.referral_code == user_data.referral_code).first()
+            if not referrer:
+                raise HTTPException(status_code=400, detail="Invalid referral code")
+        
+        # Hash password and PIN
+        password_hash = get_password_hash(user_data.password)
+        pin_hash = get_password_hash(user_data.pin)
+        
+        # Generate unique user ID and referral code
+        user_id = generate_user_id()
+        while db.query(User).filter(User.user_id == user_id).first():
+            user_id = generate_user_id()
+        
+        referral_code = generate_referral_code()
+        while db.query(User).filter(User.referral_code == referral_code).first():
+            referral_code = generate_referral_code()
+        
+        # Create new user
+        new_user = User(
+            user_id=user_id,
+            email=user_data.email,
+            name=user_data.name,
+            password_hash=password_hash,
+            pin_hash=pin_hash,
+            referral_code=referral_code,
+            referred_by_code=user_data.referral_code,
+            birthday_day=user_data.birthday_day,
+            birthday_month=user_data.birthday_month,
+            birthday_year=user_data.birthday_year,
+            gender=user_data.gender,
+            user_country_code=user_data.user_country_code,
+            zip_code=user_data.zip_code,
+            bitcoin_wallet=user_data.bitcoin_wallet,
+            ethereum_wallet=user_data.ethereum_wallet,
+            status=UserStatus.APPROVED,  # Auto-approve for now
+            email_verified=True  # Auto-verify for now
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        # Process referral rewards
+        process_referral_rewards(db, new_user)
+        
+        # Log activity
+        log_activity(
+            db, new_user.id, "USER_REGISTERED",
+            f"New user registered with email {user_data.email}",
+            request.client.host
+        )
+        
+        # Send welcome email
+        await send_email_notification(
+            email=new_user.email,
+            subject="Welcome to Crypto Mining Platform!",
+            template_type="account_creation",
+            context={
+                "name": new_user.name,
+                "user_id": new_user.user_id,
+                "referral_code": new_user.referral_code
+            },
+            db=db,
+            user_id=new_user.id
+        )
+        
+        return {
+            "message": "Registration successful",
+            "user_id": new_user.user_id,
+            "email": new_user.email,
+            "referral_code": new_user.referral_code
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during registration: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@app.post("/api/request-otp")
+@limiter.limit("3/5minutes")
+def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
+    """Request OTP for password reset, PIN reset, or account verification"""
+    try:
+        # Normalize email
+        email_normalized = request.email.strip().lower()
+
+        # Check if user exists
+        user = db.query(User).filter(func.lower(User.email) == email_normalized).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Check rate limiting (max 3 OTPs per 5 minutes)
+        recent_otps = db.query(OTP).filter(
+            func.lower(OTP.email) == email_normalized,
+            OTP.created_at > datetime.utcnow() - timedelta(minutes=5)
+        ).count()
+
+        if recent_otps >= 3:
+            raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 5 minutes.")
+
+        # Delete old OTPs for this email & purpose
+        db.query(OTP).filter(
+            and_(func.lower(OTP.email) == email_normalized, OTP.purpose == request.purpose)
+        ).delete()
+        db.commit()
+
+        # Generate new OTP
+        otp_code = generate_otp()
+        expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+        # Save OTP to database
+        otp_record = OTP(
+            email=email_normalized,
+            otp_code=otp_code,
+            purpose=request.purpose,
+            expires_at=expires_at
+        )
+        db.add(otp_record)
+        db.commit()
+
+        # Send OTP email
+        email_service.send_otp_email(email_normalized, otp_code, request.purpose)
+
+        # Log security event
+        log_security_event(db, user.id, "otp_requested", f"OTP requested for {request.purpose}")
+
+        return {"message": "OTP sent successfully", "expires_in": 600}
+
+    except Exception as e:
+        logger.error(f"Error requesting OTP: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to send OTP")
+
+@app.post("/api/verify-otp")
+def verify_otp(otp_verify: OTPVerify, db: Session = Depends(get_db)):
+    """Verify OTP code"""
+    try:
+        # Normalize email
+        email_normalized = otp_verify.email.strip().lower()
+        
+        # Find valid OTP
+        otp_record = db.query(OTP).filter(
+            OTP.email == email_normalized,
+            OTP.otp_code == otp_verify.otp_code,
+            OTP.purpose == otp_verify.purpose,
+            OTP.expires_at > datetime.utcnow(),
+            OTP.used == False
+        ).first()
+        
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+        
+        # Mark OTP as used
+        otp_record.used = True
+        otp_record.used_at = datetime.utcnow()
+        db.commit()
+        
+        # Get user
+        user = db.query(User).filter(User.email == email_normalized).first()
+        
+        # Log security event
+        log_security_event(db, user.id if user else None, "otp_verified", f"OTP verified for {otp_verify.purpose}")
+        
+        return {"message": "OTP verified successfully", "verified": True}
+    
+    except Exception as e:
+        logger.error(f"Error verifying OTP: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to verify OTP")
+
+@app.post("/api/change-password")
+async def change_password(request: PasswordChangeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Change user password"""
+    try:
+        # Verify current password
+        if not verify_password(request.current_password, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        
+        # Hash new password
+        new_password_hash = get_password_hash(request.new_password)
+        
+        # Update password
+        current_user.password_hash = new_password_hash
+        current_user.updated_at = datetime.utcnow()
+        db.commit()
+        
+        # Log security event
+        log_security_event(db, current_user.id, "password_changed", "Password changed successfully")
+        
+        # Send notification email
+        await send_email_notification(
+            email=current_user.email, 
+            subject="Password Changed", 
+            template_type="login_alert",
+            context={
+                "name": current_user.name,
+                "action": "Password Changed",
+                "message": "Your password has been changed successfully."
+            },
+            db=db,
+            user_id=current_user.id
+        )
+        
+        return {"message": "Password changed successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error changing password: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to change password")
+
+@app.post("/api/change-pin")
+async def change_pin(request: PinChangeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Change user PIN"""
+    try:
+        # Verify current PIN
+        if not current_user.pin_hash or not verify_password(request.current_pin, current_user.pin_hash):
+            raise HTTPException(status_code=400, detail="Current PIN is incorrect")
+        
+        # Hash new PIN
+        new_pin_hash = get_password_hash(request.new_pin)
+        
+        # Update PIN
+        current_user.pin_hash = new_pin_hash
+        current_user.updated_at = datetime.utcnow()
+        db.commit()
+        
+        # Log security event
+        log_security_event(db, current_user.id, "pin_changed", "PIN changed successfully")
+        
+        return {"message": "PIN changed successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error changing PIN: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to change PIN")
+
+@app.post("/api/reset-password")
+async def reset_password(request: PasswordResetRequest, db: Session = Depends(get_db)):
+    """Reset password using OTP"""
+    try:
+        # Verify OTP first
+        otp_record = db.query(OTP).filter(
+            OTP.email == request.email,
+            OTP.otp_code == request.otp_code,
+            OTP.purpose == "password_reset",
+            OTP.expires_at > datetime.utcnow(),
+            OTP.used == False
+        ).first()
+        
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+        
+        # Get user
+        user = db.query(User).filter(User.email == request.email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Hash new password
+        new_password_hash = get_password_hash(request.new_password)
+        
+        # Update password
+        user.password_hash = new_password_hash
+        user.updated_at = datetime.utcnow()
+        
+        # Mark OTP as used
+        otp_record.used = True
+        otp_record.used_at = datetime.utcnow()
+        
+        db.commit()
+        
+        # Log security event
+        log_security_event(db, user.id, "password_reset", "Password reset using OTP")
+        
+        # Send confirmation email
+        await send_email_notification(
+            email=user.email, 
+            subject="Password Reset", 
+            template_type="login_alert",
+            context={
+                "name": user.name,
+                "action": "Password Reset",
+                "message": "Your password has been reset successfully."
+            },
+            db=db,
+            user_id=user.id
+        )
+        
+        return {"message": "Password reset successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error resetting password: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to reset password")
+
+@app.post("/api/reset-pin")
+async def reset_pin(request: PinResetRequest, db: Session = Depends(get_db)):
+    """Reset PIN using OTP"""
+    try:
+        # Verify OTP first
+        otp_record = db.query(OTP).filter(
+            OTP.email == request.email,
+            OTP.otp_code == request.otp_code,
+            OTP.purpose == "pin_reset",
+            OTP.expires_at > datetime.utcnow(),
+            OTP.used == False
+        ).first()
+        
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+        
+        # Get user
+        user = db.query(User).filter(User.email == request.email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Hash new PIN
+        new_pin_hash = get_password_hash(request.new_pin)
+        
+        # Update PIN
+        user.pin_hash = new_pin_hash
+        user.updated_at = datetime.utcnow()
+        
+        # Mark OTP as used
+        otp_record.used = True
+        otp_record.used_at = datetime.utcnow()
+        
+        db.commit()
+        
+        # Log security event
+        log_security_event(db, user.id, "pin_reset", "PIN reset using OTP")
+        
+        return {"message": "PIN reset successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error resetting PIN: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to reset PIN")
+
+@app.post("/api/verify-pin")
+async def verify_pin(request: UserPinVerify, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Verify user PIN for dashboard access"""
+    try:
+        # Check if user has a PIN set
+        if not current_user.pin_hash:
+            raise HTTPException(status_code=400, detail="PIN not set for this account")
+        
+        # Verify PIN
+        if not verify_password(request.pin, current_user.pin_hash):
+            # Log failed attempt
+            log_security_event(db, current_user.id, "pin_verification_failed", "Failed PIN verification attempt")
+            raise HTTPException(status_code=400, detail="Invalid PIN")
+        
+        # Log successful verification
+        log_security_event(db, current_user.id, "pin_verified", "PIN verified successfully")
+        
+        # Generate session token for dashboard access
+        dashboard_token = create_access_token(
+            data={"sub": current_user.email, "type": "dashboard_access"},
+            expires_delta=timedelta(hours=1)
+        )
+        
+        return {
+            "message": "PIN verified successfully",
+            "dashboard_token": dashboard_token,
+            "expires_in": 3600
+        }
+        
+    except Exception as e:
+        logger.error(f"Error verifying PIN: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to verify PIN")
+
+# =============================================================================
+# 2FA ENDPOINTS
+# =============================================================================
+
+@app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
+async def setup_2fa(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Setup 2FA for user account"""
+    if current_user.two_fa_enabled:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+    
+    # Generate new secret
+    secret = generate_2fa_secret()
+    qr_url = get_2fa_qr_url(secret, current_user.email)
+    
+    # Generate backup codes
+    backup_codes = [secrets.token_hex(4).upper() for _ in range(10)]
+    
+    # Store secret temporarily (not enabled until verified)
+    current_user.two_fa_secret = secret
+    db.commit()
+    
+    log_security_event(
+        db, current_user.id, "2fa_setup_initiated",
+        "User initiated 2FA setup",
+        "system"
+    )
+    
+    return TwoFASetupResponse(
+        secret=secret,
+        qr_code_url=qr_url,
+        backup_codes=backup_codes
+    )
+
+@app.post("/api/security/2fa/verify")
+async def verify_2fa_setup(
+    verify_request: TwoFAVerifyRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Verify and enable 2FA"""
+    if not current_user.two_fa_secret:
+        raise HTTPException(status_code=400, detail="2FA setup not initiated")
+    
+    if not verify_2fa_token(current_user.two_fa_secret, verify_request.token):
+        raise HTTPException(status_code=400, detail="Invalid 2FA token")
+    
+    # Enable 2FA
+    current_user.two_fa_enabled = True
+    db.commit()
+    
+    log_security_event(
+        db, current_user.id, "2fa_enabled",
+        "User successfully enabled 2FA",
+        "system"
+    )
+    
+    return {"message": "2FA enabled successfully"}
+
+@app.post("/api/security/2fa/disable")
+async def disable_2fa(
+    verify_request: TwoFAVerifyRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Disable 2FA"""
+    if not current_user.two_fa_enabled:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    
+    if not verify_2fa_token(current_user.two_fa_secret, verify_request.token):
+        raise HTTPException(status_code=400, detail="Invalid 2FA token")
+    
+    # Disable 2FA
+    current_user.two_fa_enabled = False
+    current_user.two_fa_secret = None
+    db.commit()
+    
+    log_security_event(
+        db, current_user.id, "2fa_disabled",
+        "User disabled 2FA",
+        "system"
+    )
+    
+    return {"message": "2FA disabled successfully"}
+
+@app.get("/api/security/2fa/status", response_model=TwoFAStatusResponse)
+async def get_2fa_status(
+    current_user: User = Depends(get_current_user)
+):
+    """Get 2FA status"""
+    return TwoFAStatusResponse(
+        enabled=current_user.two_fa_enabled
+    )
+
+@app.get("/api/security/settings", response_model=SecuritySettingsResponse)
+async def get_security_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get user security settings"""
+    # Get last successful login
+    last_login = db.query(SecurityLog).filter(
+        SecurityLog.user_id == current_user.id,
+        SecurityLog.event_type == "successful_login"
+    ).order_by(SecurityLog.created_at.desc()).first()
+    
+    return SecuritySettingsResponse(
+        two_fa_enabled=current_user.two_fa_enabled,
+        account_locked=current_user.account_locked,
+        failed_login_attempts=current_user.failed_login_attempts,
+        last_login=last_login.created_at if last_login else None
+    )
+
+# =============================================================================
+# CRYPTO DEPOSIT ENDPOINTS
+# =============================================================================
+
+def get_or_create_admin_settings(db: Session):
+    """Get or create admin settings"""
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        settings = AdminSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+@app.get("/api/deposits/info/{crypto_type}")
+def get_deposit_info(crypto_type: CryptoType, db: Session = Depends(get_db)):
+    """Get deposit information including QR code and wallet address"""
+    settings = get_or_create_admin_settings(db)
+    
+    # Get wallet address from admin settings
+    if crypto_type == "bitcoin":
+        wallet_address = settings.bitcoin_wallet_address
+        qr_code_url = settings.bitcoin_deposit_qr
+    else:  # ethereum
+        wallet_address = settings.ethereum_wallet_address
+        qr_code_url = settings.ethereum_deposit_qr
+    
+    if not wallet_address:
+        raise HTTPException(status_code=404, detail=f"No wallet address configured for {crypto_type}")
+    
+    return {
+        "crypto_type": crypto_type,
+        "qr_code_url": qr_code_url,
+        "wallet_address": wallet_address
+    }
+
+def get_crypto_usd_rate(db: Session, crypto_type: str) -> Decimal:
+    """Get current USD rate for crypto from admin settings"""
+    settings = get_or_create_admin_settings(db)
+    if crypto_type == "bitcoin":
+        return settings.bitcoin_rate_usd
+    else:
+        return settings.ethereum_rate_usd
+
+def convert_crypto_to_usd(crypto_amount: Decimal, crypto_type: str, db: Session) -> Decimal:
+    """Convert crypto amount to USD"""
+    rate = get_crypto_usd_rate(db, crypto_type)
+    return crypto_amount * rate
+
+def convert_usd_to_crypto(usd_amount: Decimal, crypto_type: str, db: Session) -> Decimal:
+    """Convert USD amount to crypto"""
+    rate = get_crypto_usd_rate(db, crypto_type)
+    return usd_amount / rate
+
+@app.get("/api/deposits/rates")
+def get_crypto_rates(db: Session = Depends(get_db)):
+    """Get current crypto to USD conversion rates"""
+    bitcoin_rate = get_crypto_usd_rate(db, "bitcoin")
+    ethereum_rate = get_crypto_usd_rate(db, "ethereum")
+    
+    return {
+        "bitcoin_usd_rate": bitcoin_rate,
+        "ethereum_usd_rate": ethereum_rate
+    }
+
+@app.post("/api/deposits/convert")
+def convert_amount(
+    crypto_type: CryptoType,
+    amount: Optional[Decimal] = None,
+    usd_amount: Optional[Decimal] = None,
+    db: Session = Depends(get_db)
+):
+    """Convert between crypto and USD amounts"""
+    if amount and usd_amount:
+        raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount, not both")
+    
+    if not amount and not usd_amount:
+        raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount")
+    
+    if amount:
+        # Convert crypto to USD
+        usd_equivalent = convert_crypto_to_usd(amount, crypto_type, db)
+        return {
+            "crypto_amount": amount,
+            "usd_amount": usd_equivalent,
+            "crypto_type": crypto_type
+        }
+    else:
+        # Convert USD to crypto
+        crypto_equivalent = convert_usd_to_crypto(usd_amount, crypto_type, db)
+        return {
+            "crypto_amount": crypto_equivalent,
+            "usd_amount": usd_amount,
+            "crypto_type": crypto_type
+        }
+
+@app.post("/api/deposits/create")
+def create_deposit(
+    deposit_data: DepositCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new crypto deposit with USD conversion"""
+    if current_user.is_flagged:
+        raise HTTPException(status_code=403, detail="Account flagged - deposits not allowed")
+    
+    # Validate input - must provide either crypto amount or USD amount
+    if deposit_data.amount and deposit_data.usd_amount:
+        raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount, not both")
+    
+    if not deposit_data.amount and not deposit_data.usd_amount:
+        raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount")
+    
+    # Calculate both amounts
+    if deposit_data.amount:
+        crypto_amount = deposit_data.amount
+        usd_amount = convert_crypto_to_usd(crypto_amount, deposit_data.crypto_type, db)
+    else:
+        usd_amount = deposit_data.usd_amount
+        crypto_amount = convert_usd_to_crypto(usd_amount, deposit_data.crypto_type, db)
+    
+    # Get deposit info (QR code and wallet address)
+    settings = get_or_create_admin_settings(db)
+    
+    if deposit_data.crypto_type == "bitcoin":
+        wallet_address = settings.bitcoin_wallet_address
+        qr_code_url = settings.bitcoin_deposit_qr
+    else:
+        wallet_address = settings.ethereum_wallet_address
+        qr_code_url = settings.ethereum_deposit_qr
+    
+    if not wallet_address:
+        raise HTTPException(status_code=404, detail=f"No deposit info available for {deposit_data.crypto_type}")
+    
+    deposit = CryptoDeposit(
+        user_id=current_user.id,
+        crypto_type=deposit_data.crypto_type,
+        amount=crypto_amount,
+        usd_amount=usd_amount,
+        transaction_hash=deposit_data.transaction_hash,
+        status=DepositStatus.PENDING
+    )
+    
+    db.add(deposit)
+    db.commit()
+    db.refresh(deposit)
+    
+    log_activity(
+        db, current_user.id, "DEPOSIT_CREATED",
+        f"Created {deposit_data.crypto_type} deposit of {crypto_amount} (${usd_amount} USD)",
+        request.client.host
+    )
+    
+    return {
+        "message": "Deposit created successfully",
+        "deposit_id": deposit.id,
+        "crypto_amount": crypto_amount,
+        "usd_amount": usd_amount,
+        "qr_code_url": qr_code_url,
+        "wallet_address": wallet_address,
+        "crypto_type": deposit_data.crypto_type
+    }
+
+@app.post("/api/deposits/{deposit_id}/upload-evidence")
+async def upload_deposit_evidence(
+    deposit_id: int,
+    evidence_file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upload deposit evidence (screenshot/proof)"""
+    deposit = db.query(CryptoDeposit).filter(
+        CryptoDeposit.id == deposit_id,
+        CryptoDeposit.user_id == current_user.id
+    ).first()
+    
+    if not deposit:
+        raise HTTPException(status_code=404, detail="Deposit not found")
+    
+    if deposit.status != DepositStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Can only upload evidence for pending deposits")
+    
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "application/pdf"]
+    if evidence_file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Only images (JPEG, PNG, GIF) and PDF files are allowed")
+    
+    # Save file (in production, use cloud storage like AWS S3)
+    import uuid
+    
+    upload_dir = "uploads/deposit_evidence"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    file_extension = evidence_file.filename.split(".")[-1]
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = os.path.join(upload_dir, unique_filename)
+    
+    with open(file_path, "wb") as buffer:
+        content = await evidence_file.read()
+        buffer.write(content)
+    
+    # Update deposit with evidence URL
+    deposit.evidence_url = f"/uploads/deposit_evidence/{unique_filename}"
+    db.commit()
+    
+    log_activity(
+        db, current_user.id, "DEPOSIT_EVIDENCE_UPLOADED",
+        f"Uploaded evidence for {deposit.crypto_type} deposit #{deposit.id}",
+        "system"
+    )
+    
+    return {
+        "message": "Evidence uploaded successfully",
+        "evidence_url": deposit.evidence_url
+    }
+
+@app.post("/api/deposits/{deposit_id}/submit")
+async def submit_deposit(
+    deposit_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Submit deposit for admin review (with or without evidence)"""
+    deposit = db.query(CryptoDeposit).filter(
+        CryptoDeposit.id == deposit_id,
+        CryptoDeposit.user_id == current_user.id
+    ).first()
+    
+    if not deposit:
+        raise HTTPException(status_code=404, detail="Deposit not found")
+    
+    if deposit.status != DepositStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Deposit already submitted")
+    
+    log_activity(
+        db, current_user.id, "DEPOSIT_SUBMITTED",
+        f"Submitted {deposit.crypto_type} deposit #{deposit.id} for admin review",
+        "system"
+    )
+    
+    return {"message": "Deposit submitted for admin review"}
+
+# =============================================================================
+# ADMIN DEPOSIT MANAGEMENT ENDPOINTS
+# =============================================================================
+
+@app.get("/api/admin/deposits/pending")
+def get_pending_deposits(admin_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    """Get all pending deposits for admin confirmation"""
+    deposits = db.query(CryptoDeposit).options(joinedload(CryptoDeposit.user)).filter(
+        CryptoDeposit.status == DepositStatus.PENDING
+    ).order_by(CryptoDeposit.created_at.desc()).all()
+    
+    return [
+        {
+            "id": d.id,
+            "user_email": d.user.email,
+            "crypto_type": d.crypto_type,
+            "amount": d.amount,
+            "usd_amount": d.usd_amount,
+            "transaction_hash": d.transaction_hash,
+            "evidence_url": d.evidence_url,
+            "created_at": d.created_at
+        }
+        for d in deposits
+    ]
+
+@app.put("/api/admin/deposits/{deposit_id}/confirm")
+async def confirm_deposit(
+    deposit_id: int,
+    request: Request,
+    action: str = Query(...),  # "confirm" or "reject"
+    admin_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Confirm or reject a deposit and start mining if confirmed"""
+    deposit = db.query(CryptoDeposit).filter(CryptoDeposit.id == deposit_id).first()
+    if not deposit:
+        raise HTTPException(status_code=404, detail="Deposit not found")
+    
+    user = db.query(User).filter(User.id == deposit.user_id).first()
+    
+    if action == "confirm":
+        deposit.status = DepositStatus.CONFIRMED
+        deposit.confirmed_by = admin_user.id
+        deposit.confirmed_at = datetime.utcnow()
+        
+        # Add crypto to user balance
+        if deposit.crypto_type == "bitcoin":
+            user.bitcoin_balance += deposit.amount
+        else:
+            user.ethereum_balance += deposit.amount
+        
+        # Get mining rate (personal or global)
+        mining_rate = user.personal_mining_rate
+        if not mining_rate:
+            settings = get_admin_settings(db)
+            mining_rate = settings.global_mining_rate * 100  # Convert to percentage
+        
+        # Create mining session
+        mining_session = MiningSession(
+            user_id=user.id,
+            deposit_id=deposit.id,
+            crypto_type=deposit.crypto_type,
+            deposited_amount=deposit.amount,
+            mining_rate=mining_rate,
+            is_active=True
+        )
+        
+        db.add(mining_session)
+        
+        log_transaction(
+            db=db,
+            user_id=user.id,
+            transaction_type="deposit",
+            crypto_type=deposit.crypto_type,
+            amount=deposit.amount,
+            description=f"Deposit confirmed by admin - {deposit.crypto_type} mining started at {mining_rate}%",
+            reference_id=str(deposit.id)
+        )
+        
+        log_admin_action(
+            db=db,
+            admin_id=admin_user.id,
+            action="confirm_deposit",
+            target_type="deposit",
+            target_id=str(deposit.id),
+            details=f"Confirmed {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
+            ip_address=request.client.host,
+            user_agent=request.headers.get("user-agent", "")
+        )
+        
+        # Send confirmation email
+        await send_email_notification(
+            email=user.email,
+            subject="Deposit Confirmed - Mining Started!",
+            template_type="deposit_confirmation",
+            context={
+                "name": user.name,
+                "crypto_type": deposit.crypto_type.title(),
+                "amount": deposit.amount,
+                "mining_rate": mining_rate,
+                "deposit_id": deposit.id
+            },
+            db=db,
+            user_id=user.id
+        )
+        
+    elif action == "reject":
+        deposit.status = DepositStatus.REJECTED
+        deposit.confirmed_by = admin_user.id
+        deposit.confirmed_at = datetime.utcnow()
+        
+        log_admin_action(
+            db=db,
+            admin_id=admin_user.id,
+            action="reject_deposit",
+            target_type="deposit",
+            target_id=str(deposit.id),
+            details=f"Rejected {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
+            ip_address=request.client.host,
+            user_agent=request.headers.get("user-agent", "")
+        )
+    
+    db.commit()
+    
+    return {"message": f"Deposit {action}ed successfully"}
+
+# =============================================================================
+# MINING ENDPOINTS
+# =============================================================================
+
+@app.get("/api/mining/live-progress")
+def get_live_mining_progress(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get real-time mining progress for all active sessions"""
+    active_sessions = db.query(MiningSession).filter(
+        MiningSession.user_id == current_user.id,
+        MiningSession.is_active == True
+    ).all()
+    
+    progress_data = []
+    for session in active_sessions:
+        elapsed_seconds = (datetime.utcnow() - session.started_at).total_seconds()
+        
+        # Calculate mining per second (rate over 24 hours)
+        mining_per_second = (session.deposited_amount * (session.mining_rate / 100)) / (24 * 3600)
+        
+        # Calculate current mined amount
+        current_mined = min(
+            mining_per_second * elapsed_seconds,
+            session.deposited_amount * (session.mining_rate / 100)
+        )
+        
+        progress_data.append({
+            "session_id": session.id,
+            "crypto_type": session.crypto_type,
+            "deposited_amount": session.deposited_amount,
+            "mining_rate": session.mining_rate,
+            "current_mined": current_mined,
+            "mining_per_second": mining_per_second,
+            "progress_percentage": (current_mined / (session.deposited_amount * (session.mining_rate / 100))) * 100,
+            "elapsed_hours": elapsed_seconds / 3600
+        })
+    
+    return {"active_sessions": progress_data}
+
+# =============================================================================
+# BACKGROUND TASKS
+# =============================================================================
+
+@app.on_event("startup")
+@repeat_every(seconds=60)  # Run every minute
+def process_mining_sessions():
+    """Background task to process mining sessions every minute"""
+    db = SessionLocal()
+    try:
+        active_sessions = db.query(MiningSession).filter(
+            MiningSession.is_active == True
+        ).all()
+        
+        for session in active_sessions:
+            elapsed_seconds = (datetime.utcnow() - session.started_at).total_seconds()
+            
+            # Calculate total amount that should be mined by now
+            mining_per_second = (session.deposited_amount * (session.mining_rate / 100)) / (24 * 3600)
+            total_should_be_mined = min(
+                mining_per_second * elapsed_seconds,
+                session.deposited_amount * (session.mining_rate / 100)
+            )
+            
+            # Calculate increment since last update
+            mining_increment = total_should_be_mined - session.mined_amount
+            
+            if mining_increment > 0:
+                # Update session
+                session.mined_amount = total_should_be_mined
+                session.last_processed = datetime.utcnow()
+                
+                # Update user balance
+                user = db.query(User).filter(User.id == session.user_id).first()
+                if session.crypto_type == "bitcoin":
+                    user.bitcoin_balance += mining_increment
+                else:
+                    user.ethereum_balance += mining_increment
+                
+                # Log transaction
+                log_transaction(
+                    db=db,
+                    user_id=user.id,
+                    transaction_type="mining_reward",
+                    crypto_type=session.crypto_type,
+                    amount=mining_increment,
+                    description=f"Mining reward - {session.crypto_type} mined at {session.mining_rate}% rate",
+                    reference_id=str(session.id)
+                )
+        
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"Error processing mining sessions: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+@app.on_event("startup")
+@repeat_every(seconds=30)  # Process email queue every 30 seconds
+def process_email_queue():
+    """Background task to process email queue"""
+    db = SessionLocal()
+    try:
+        pending_emails = db.query(EmailNotification).filter(
+            EmailNotification.status == "pending"
+        ).limit(10).all()
+        
+        for email_notif in pending_emails:
+            try:
+                # Get template and render
+                template = env.get_template(f'{email_notif.template_type}.html')
+                html_content = template.render(
+                    email_subject=email_notif.subject
+                )
+                
+                success = email_service.send_email(
+                    to_email=email_notif.email,
+                    subject=email_notif.subject,
+                    body=html_content,
+                    is_html=True
+                )
+                
+                if success:
+                    email_notif.status = "sent"
+                    email_notif.sent_at = datetime.utcnow()
+                else:
+                    email_notif.status = "failed"
+                    email_notif.attempts += 1
+                    
+                    # Retry failed emails up to 3 times
+                    if email_notif.attempts < 3:
+                        email_notif.status = "pending"
+                        email_notif.scheduled_for = datetime.utcnow() + timedelta(minutes=5)
+                
+            except Exception as e:
+                email_notif.status = "failed"
+                email_notif.attempts += 1
+                email_notif.error_message = str(e)
+                logger.error(f"Failed to send email {email_notif.id}: {e}")
+        
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"Error processing email queue: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+# =============================================================================
+# APPLICATION STARTUP
+# =============================================================================
+
+@app.on_event("startup")
+def setup_database_and_admin():
+    # ✅ Create database tables
+    Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        admin_email = os.getenv("ADMIN_EMAIL")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        admin_pin = os.getenv("ADMIN_PIN")
+
+        if not admin_email or not admin_password or not admin_pin:
+            logger.warning("⚠️ Missing ADMIN credentials in environment, skipping admin creation.")
+            return
+
+        # 🔹 Fetch all admin users
+        all_admins = db.query(User).filter(User.is_admin == True).all()
+
+        if all_admins:
+            # Keep only one admin: update the first admin with env vars
+            admin_user = all_admins[0]
+            admin_user.email = admin_email
+            admin_user.password_hash = pwd_context.hash(admin_password)
+            admin_user.pin_hash = pwd_context.hash(admin_pin)
+            admin_user.email_verified = True
+            admin_user.user_id = admin_user.user_id or generate_user_id()
+            admin_user.referral_code = admin_user.referral_code or generate_referral_code()
+            db.add(admin_user)
+            db.commit()
+            logger.info(f"✅ Admin user updated: {admin_email}")
+
+            # Delete any extra admins
+            for extra_admin in all_admins[1:]:
+                db.delete(extra_admin)
+            db.commit()
+            if len(all_admins) > 1:
+                logger.info(f"⚠️ Deleted {len(all_admins)-1} extra admin(s)")
+        else:
+            # No admin exists, create one
+            admin_user = User(
+                name="Admin",
+                email=admin_email,
+                password_hash=pwd_context.hash(admin_password),
+                pin_hash=pwd_context.hash(admin_pin),
+                is_admin=True,
+                email_verified=True,
+                user_id=generate_user_id(),
+                referral_code=generate_referral_code()
+            )
+            db.add(admin_user)
+            db.commit()
+            logger.info(f"✅ Admin user created: {admin_email}")
+
+        # 🔹 Check if default admin settings exist
+        existing_settings = db.query(AdminSettings).first()
+        if not existing_settings:
+            default_settings = AdminSettings(
+                bitcoin_rate_usd=50000.0,
+                ethereum_rate_usd=3000.0,
+                global_mining_rate=0.7,
+                referral_reward_enabled=True,
+                referral_reward_type="bitcoin",
+                referral_reward_amount=0.001,
+                referrer_reward_amount=0.001
+            )
+            db.add(default_settings)
+            db.commit()
+            logger.info("✅ Default admin settings created")
+        else:
+            logger.info("ℹ️ Admin settings already exist")
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error creating/updating admin user/settings: {e}")
+    finally:
+        db.close()
+
+@app.get("/", response_model=dict)
+@app.head("/")
+def root():
+    return {"message": "Crypto Mining Platform API - Server is running"}
+
+@app.get("/health")
+@app.head("/health")
+def health_check():
+    return {"status": "ok", "message": "Backend is awake and running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
