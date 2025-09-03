@@ -1567,7 +1567,7 @@ def login(user_data: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"Account is {user.status}")
 
     # Check if account is locked
-    if is_account_locked(user):
+    if is_account_locked(user, db):
         raise HTTPException(status_code=423, detail="Account is temporarily locked due to multiple failed login attempts")
 
     # Reset failed login attempts on successful login
