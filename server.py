@@ -121,6 +121,9 @@ def get_db():
 def create_tables():
     Base.metadata.create_all(bind=engine)
 
+
+logger = logging.getLogger("uvicorn.error")
+
 # =============================================================================
 # ENUMS
 # =============================================================================
@@ -438,6 +441,66 @@ class UserApproval(Base):
     
     user = relationship("User", foreign_keys=[user_id], back_populates="approvals")
 
+
+class EmailService:
+    def __init__(self):
+        self.smtp_server = SMTP_SERVER
+        self.smtp_port = SMTP_PORT
+        self.smtp_username = SMTP_USERNAME
+        self.smtp_password = SMTP_PASSWORD
+        self.from_email = FROM_EMAIL
+        self.from_name = FROM_NAME
+
+    def send_email(self, to_email: str, subject: str, body: str, is_html: bool = False):
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = formataddr((self.from_name, self.from_email))
+            msg['To'] = to_email
+            msg['Subject'] = subject
+
+            msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
+
+            if int(self.smtp_port) == 465:
+                # SSL mode
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
+            else:
+                # STARTTLS mode (common for port 587)
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
+
+            return True
+        except Exception as e:
+            print(f"Failed to send email: {e}")
+            return False
+
+    def send_otp_email(self, to_email: str, otp_code: str, purpose: str):
+        subject = f"Your OTP Code for {purpose.replace('_', ' ').title()}"
+        template = env.get_template('otp_email.html')
+        body = template.render(otp_code=otp_code, purpose=purpose)
+        return self.send_email(to_email, subject, body, is_html=True)
+
+    def send_agent_approval_email(self, agent_email: str, user_name: str, user_email: str, approval_token: str):
+        approve_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=approve"
+        reject_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=reject"
+
+        subject = "New User Approval Request"
+        template = env.get_template('agent_approval.html')
+        body = template.render(
+            user_name=user_name,
+            user_email=user_email,
+            approve_url=approve_url,
+            reject_url=reject_url
+        )
+        return self.send_email(agent_email, subject, body, is_html=True)
+
+# Initialize email service
+email_service = EmailService()
+
 # =============================================================================
 # UTILITY FUNCTIONS (Defined before use)
 # =============================================================================
@@ -446,6 +509,9 @@ def generate_user_id():
     """Generate a unique 10-digit user ID"""
     # Generate 10-digit number (no leading zero)
     return ''.join([str(random.randint(1, 9))] + [str(random.randint(0, 9)) for _ in range(9)])
+
+def generate_otp():
+    return ''.join(secrets.choice(string.digits) for _ in range(6))
 
 def generate_referral_code():
     """Generate a unique referral code"""
@@ -1283,7 +1349,8 @@ async def login_user(
     return {
         "access_token": access_token, 
         "token_type": "bearer",
-        "requires_2fa": user.two_fa_enabled
+        "requires_2fa": user.two_fa_enabled,
+        "user": UserResponse.from_orm(user)
     }
 
 @app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
@@ -1494,58 +1561,70 @@ async def get_security_stats(
     }
 
 @app.post("/api/request-otp")
-async def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
+def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
     """Request OTP for password reset, PIN reset, or account verification"""
     try:
+        # Normalize email
+        email_normalized = request.email.strip().lower()
+
         # Check if user exists
-        user = db.query(User).filter(User.email == request.email).first()
+        user = db.query(User).filter(func.lower(User.email) == email_normalized).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        # Check rate limiting
+
+        # Check rate limiting (max 3 OTPs per 5 minutes)
         recent_otps = db.query(OTP).filter(
-            OTP.email == request.email,
+            func.lower(OTP.email) == email_normalized,
             OTP.created_at > datetime.utcnow() - timedelta(minutes=5)
         ).count()
-        
+
         if recent_otps >= 3:
             raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 5 minutes.")
-        
-        # Generate OTP
+
+        # Delete old OTPs for this email & purpose
+        db.query(OTP).filter(
+            and_(func.lower(OTP.email) == email_normalized, OTP.purpose == request.purpose)
+        ).delete()
+        db.commit()
+
+        # Generate new OTP
         otp_code = generate_otp()
         expires_at = datetime.utcnow() + timedelta(minutes=10)
-        
+
         # Save OTP to database
         otp_record = OTP(
-            email=request.email,
+            email=email_normalized,
             otp_code=otp_code,
             purpose=request.purpose,
             expires_at=expires_at
         )
         db.add(otp_record)
         db.commit()
-        
+
         # Send OTP email
-        await send_otp_email(request.email, otp_code, request.purpose)
-        
+        email_service.send_otp_email(email_normalized, otp_code, request.purpose)
+
         # Log security event
         log_security_event(db, user.id, "otp_requested", f"OTP requested for {request.purpose}")
-        
+
         return {"message": "OTP sent successfully", "expires_in": 600}
-        
+
     except Exception as e:
         logger.error(f"Error requesting OTP: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to send OTP")
 
 @app.post("/api/verify-otp")
-async def verify_otp(request: OTPVerify, db: Session = Depends(get_db)):
+def verify_otp(otp_verify: OTPVerify, db: Session = Depends(get_db), request: Request = None):
     """Verify OTP code"""
     try:
+        # Normalize email
+        email_normalized = otp_verify.email.strip().lower()
+        
         # Find valid OTP
         otp_record = db.query(OTP).filter(
-            OTP.email == request.email,
-            OTP.otp_code == request.otp_code,
-            OTP.purpose == request.purpose,
+            OTP.email == email_normalized,
+            OTP.otp_code == otp_verify.otp_code,
+            OTP.purpose == otp_verify.purpose,
             OTP.expires_at > datetime.utcnow(),
             OTP.used == False
         ).first()
@@ -1559,13 +1638,13 @@ async def verify_otp(request: OTPVerify, db: Session = Depends(get_db)):
         db.commit()
         
         # Get user
-        user = db.query(User).filter(User.email == request.email).first()
+        user = db.query(User).filter(User.email == email_normalized).first()
         
         # Log security event
-        log_security_event(db, user.id, "otp_verified", f"OTP verified for {request.purpose}")
+        log_security_event(db, user.id if user else None, "otp_verified", f"OTP verified for {otp_verify.purpose}")
         
         return {"message": "OTP verified successfully", "verified": True}
-        
+    
     except Exception as e:
         logger.error(f"Error verifying OTP: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to verify OTP")
