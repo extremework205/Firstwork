@@ -118,6 +118,8 @@ def get_db():
 def create_tables():
     Base.metadata.create_all(bind=engine)
 
+logger = logging.getLogger("uvicorn.error")
+
 # =============================================================================
 # ENUMS
 # =============================================================================
@@ -3512,19 +3514,3 @@ async def upload_qr_code(
     except Exception as e:
         logger.error(f"Error uploading QR code: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and create admin user on startup"""
-    try:
-        create_tables()
-        setup_database_and_admin()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
