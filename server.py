@@ -476,10 +476,18 @@ class EmailService:
 
             msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
 
-            # Use SSL/TLS connection for PrivateMail (port 465)
-            with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
-                server.login(self.smtp_username, self.smtp_password)
-                server.sendmail(self.from_email, to_email, msg.as_string())
+            if int(self.smtp_port) == 465:
+                # SSL mode
+                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
+            else:
+                # STARTTLS mode (common for port 587)
+                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(self.smtp_username, self.smtp_password)
+                    server.sendmail(self.from_email, to_email, msg.as_string())
 
             return True
         except Exception as e:
