@@ -1549,7 +1549,11 @@ async def get_security_stats(
 
 @app.post("/api/request-otp")
 @limiter.limit("3/minute")
-async def request_otp(otp_request: OTPRequest, db: Session = Depends(get_db)):
+async def request_otp(
+    request: Request,  # 👈 required for SlowAPI
+    otp_request: OTPRequest,
+    db: Session = Depends(get_db)
+):
     """Request OTP for password reset, PIN reset, or account verification"""
     try:
         # Check if user exists
