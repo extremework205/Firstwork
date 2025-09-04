@@ -1794,8 +1794,14 @@ async def reset_pin(request: PinResetRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to reset PIN")
 
 @app.post("/api/verify-pin")
-async def verify_pin(request: UserPinVerify, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def verify_pin(
+    request: UserPinVerify,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Verify user PIN for dashboard access"""
+    ip_address = request.client.host if hasattr(request, "client") else "unknown"
+
     try:
         # Check if user has a PIN set
         if not current_user.pin_hash:
@@ -1804,11 +1810,23 @@ async def verify_pin(request: UserPinVerify, current_user: User = Depends(get_cu
         # Verify PIN
         if not verify_password(request.pin, current_user.pin_hash):
             # Log failed attempt
-            log_security_event(db, current_user.id, "pin_verification_failed", "Failed PIN verification attempt")
+            log_security_event(
+                db,
+                current_user.id,
+                "pin_verification_failed",
+                "Failed PIN verification attempt",
+                ip_address
+            )
             raise HTTPException(status_code=400, detail="Invalid PIN")
         
         # Log successful verification
-        log_security_event(db, current_user.id, "pin_verified", "PIN verified successfully")
+        log_security_event(
+            db,
+            current_user.id,
+            "pin_verified",
+            "PIN verified successfully",
+            ip_address
+        )
         
         # Generate session token for dashboard access
         dashboard_token = create_access_token(
