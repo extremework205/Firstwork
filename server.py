@@ -2213,7 +2213,7 @@ def get_pending_deposits(admin_user: User = Depends(get_admin_user), db: Session
 async def confirm_deposit(
     deposit_id: int,
     request: Request,
-    action: str = Query(...),  # "confirm" or "reject"
+    action: str = Query(..., regex="^(confirm|reject)$"),  # strictly confirm or reject
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
@@ -2223,7 +2223,9 @@ async def confirm_deposit(
         raise HTTPException(status_code=404, detail="Deposit not found")
     
     user = db.query(User).filter(User.id == deposit.user_id).first()
-    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
     if action == "confirm":
         deposit.status = DepositStatus.CONFIRMED
         deposit.confirmed_by = admin_user.id
@@ -2244,16 +2246,19 @@ async def confirm_deposit(
             ).first()
             mining_rate = rate_setting.global_rate if rate_setting else 70.0  # Default 70%
         
-        # Create mining session
+        # Create mining session (persist in DB)
         mining_session = MiningSession(
             user_id=user.id,
             deposit_id=deposit.id,
             crypto_type=deposit.crypto_type,
             deposited_amount=deposit.amount,
             mining_rate=mining_rate,
+            started_at=datetime.utcnow(),
             is_active=True
         )
-        
+        db.add(mining_session)  # ✅ save mining session
+
+        # Log transaction
         log_transaction(
             db=db,
             user_id=user.id,
@@ -2264,6 +2269,7 @@ async def confirm_deposit(
             reference_id=str(deposit.id)
         )
         
+        # Log admin action
         log_admin_action(
             db=db,
             admin_id=admin_user.id,
