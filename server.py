@@ -411,7 +411,7 @@ class MiningSession(Base):
     mined_amount = Column(SQLDecimal(18, 8), default=0)
     is_active = Column(Boolean, default=True)
     is_paused = Column(Boolean, default=False)
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     paused_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="mining_sessions")
@@ -2335,7 +2335,7 @@ def get_live_mining_progress(
     for session in active_sessions:
         # Use started_at instead of created_at
         if session.started_at:
-            elapsed_seconds = (datetime.utcnow() - session.started_at).total_seconds()
+            elapsed_seconds = (datetime.utcnow() - session.created_at).total_seconds()
         else:
             elapsed_seconds = 0
         
