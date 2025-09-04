@@ -2327,7 +2327,11 @@ def get_live_mining_progress(
     
     progress_data = []
     for session in active_sessions:
-        elapsed_seconds = (datetime.utcnow() - session.created_at).total_seconds()
+        # Use started_at instead of created_at
+        if session.started_at:
+            elapsed_seconds = (datetime.utcnow() - session.started_at).total_seconds()
+        else:
+            elapsed_seconds = 0
         
         # Calculate mining per second (rate over 24 hours)
         mining_per_second = (session.deposited_amount * (session.mining_rate / 100)) / (24 * 3600)
@@ -2341,11 +2345,11 @@ def get_live_mining_progress(
         progress_data.append({
             "session_id": session.id,
             "crypto_type": session.crypto_type,
-            "deposited_amount": session.deposited_amount,
-            "mining_rate": session.mining_rate,
-            "current_mined": current_mined,
-            "mining_per_second": mining_per_second,
-            "progress_percentage": (current_mined / (session.deposited_amount * (session.mining_rate / 100))) * 100,
+            "deposited_amount": float(session.deposited_amount),
+            "mining_rate": float(session.mining_rate),
+            "current_mined": float(current_mined),
+            "mining_per_second": float(mining_per_second),
+            "progress_percentage": (current_mined / (session.deposited_amount * (session.mining_rate / 100))) * 100 if session.mining_rate > 0 else 0,
             "elapsed_hours": elapsed_seconds / 3600
         })
     
