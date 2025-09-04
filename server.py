@@ -2620,6 +2620,7 @@ def setup_database_and_admin():
     finally:
         db.close()
 
+
 @app.get("/api/analytics/dashboard", response_model=UserAnalyticsResponse)
 async def get_user_analytics_dashboard(
     current_user: User = Depends(get_current_user),
@@ -2627,8 +2628,10 @@ async def get_user_analytics_dashboard(
 ):
     """Get comprehensive analytics dashboard for user"""
     admin_settings = get_admin_settings(db)
-    
+
+    # ---------------------
     # Portfolio Overview
+    # ---------------------
     usd_values = calculate_usd_values(current_user, admin_settings)
     portfolio_overview = {
         "total_value_usd": usd_values["total_balance_usd"],
@@ -2637,119 +2640,136 @@ async def get_user_analytics_dashboard(
         "bitcoin_value_usd": usd_values["bitcoin_balance_usd"],
         "ethereum_value_usd": usd_values["ethereum_balance_usd"],
         "asset_allocation": {
-            "bitcoin_percentage": (usd_values["bitcoin_balance_usd"] / usd_values["total_balance_usd"] * 100) if usd_values["total_balance_usd"] > 0 else 0,
-            "ethereum_percentage": (usd_values["ethereum_balance_usd"] / usd_values["total_balance_usd"] * 100) if usd_values["total_balance_usd"] > 0 else 0
+            "bitcoin_percentage": (usd_values["bitcoin_balance_usd"] / usd_values["total_balance_usd"] * 100)
+            if usd_values["total_balance_usd"] > 0 else 0,
+            "ethereum_percentage": (usd_values["ethereum_balance_usd"] / usd_values["total_balance_usd"] * 100)
+            if usd_values["total_balance_usd"] > 0 else 0
         }
     }
-    
+
+    # ---------------------
     # Mining Performance
+    # ---------------------
     active_sessions = db.query(MiningSession).filter(
         MiningSession.user_id == current_user.id,
         MiningSession.is_active == True
     ).all()
-    
+
     total_mining_power = sum(session.deposited_amount for session in active_sessions)
     avg_mining_rate = sum(session.mining_rate for session in active_sessions) / len(active_sessions) if active_sessions else 0
-    
+
     mining_performance = {
         "active_sessions": len(active_sessions),
         "total_mining_power": total_mining_power,
         "average_mining_rate": avg_mining_rate,
         "daily_estimated_earnings": sum(
-            (session.deposited_amount * (session.mining_rate / 100)) / 24 
+            (session.deposited_amount * (session.mining_rate / 100)) / 24
             for session in active_sessions
         )
     }
-    
+
+    # ---------------------
     # Earnings History (last 30 days)
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    # ---------------------
+    now = datetime.now(timezone.utc)
+    thirty_days_ago = now - timedelta(days=30)
+
     earnings_transactions = db.query(TransactionHistory).filter(
         TransactionHistory.user_id == current_user.id,
         TransactionHistory.transaction_type.in_(["mining_reward", "referral_reward"]),
         TransactionHistory.created_at >= thirty_days_ago
     ).all()
-    
+
     mining_earnings = sum(t.amount for t in earnings_transactions if t.transaction_type == "mining_reward")
     referral_earnings = sum(t.amount for t in earnings_transactions if t.transaction_type == "referral_reward")
-    
+
     earnings_history = {
         "total_earnings": mining_earnings + referral_earnings,
         "mining_earnings": mining_earnings,
         "referral_earnings": referral_earnings,
         "daily_breakdown": []
     }
-    
+
     # Daily earnings breakdown
     for i in range(30):
-        day = datetime.utcnow() - timedelta(days=i)
+        day = now - timedelta(days=i)
         day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
-        
+
         day_earnings = db.query(func.sum(TransactionHistory.amount)).filter(
             TransactionHistory.user_id == current_user.id,
             TransactionHistory.transaction_type.in_(["mining_reward", "referral_reward"]),
             TransactionHistory.created_at >= day_start,
             TransactionHistory.created_at < day_end
         ).scalar() or 0
-        
+
         earnings_history["daily_breakdown"].append({
             "date": day_start.strftime("%Y-%m-%d"),
             "earnings": day_earnings
         })
-    
+
+    # ---------------------
     # Transaction Analytics
+    # ---------------------
     all_transactions = db.query(TransactionHistory).filter(
         TransactionHistory.user_id == current_user.id
     ).all()
-    
+
     transaction_analytics = {
         "total_transactions": len(all_transactions),
         "transaction_types": {},
         "volume_by_crypto": {"bitcoin": 0, "ethereum": 0}
     }
-    
+
     for transaction in all_transactions:
         # Count by type
-        if transaction.transaction_type in transaction_analytics["transaction_types"]:
-            transaction_analytics["transaction_types"][transaction.transaction_type] += 1
-        else:
-            transaction_analytics["transaction_types"][transaction.transaction_type] = 1
-        
+        transaction_analytics["transaction_types"][transaction.transaction_type] = \
+            transaction_analytics["transaction_types"].get(transaction.transaction_type, 0) + 1
+
         # Volume by crypto
         if transaction.crypto_type:
             transaction_analytics["volume_by_crypto"][transaction.crypto_type] += transaction.amount
-    
+
+    # ---------------------
     # Referral Performance
+    # ---------------------
     referrals = db.query(User).filter(User.referred_by_code == current_user.referral_code).all()
     referral_rewards = db.query(ReferralReward).filter(
         ReferralReward.referrer_id == current_user.id
     ).all()
-    
+
     referral_performance = {
         "total_referrals": len(referrals),
         "total_rewards": sum(r.reward_amount for r in referral_rewards),
         "active_referrals": len([r for r in referrals if r.status == "approved"]),
         "referral_code": current_user.referral_code
     }
-    
+
+    # ---------------------
     # Growth Metrics
+    # ---------------------
     first_transaction = db.query(TransactionHistory).filter(
         TransactionHistory.user_id == current_user.id
     ).order_by(TransactionHistory.created_at.asc()).first()
-    
-    days_active = (datetime.utcnow() - (first_transaction.created_at if first_transaction else current_user.created_at)).days
-    
+
+    first_date = first_transaction.created_at if first_transaction else current_user.created_at
+    if first_date.tzinfo is None:
+        # Make it UTC-aware if somehow naive
+        first_date = first_date.replace(tzinfo=timezone.utc)
+
+    days_active = (now - first_date).days
+
     growth_metrics = {
         "days_active": days_active,
         "average_daily_earnings": (mining_earnings + referral_earnings) / max(days_active, 1),
-        "growth_rate": 0,  # Could calculate based on historical data
+        "growth_rate": 0,  # Placeholder for future calculation
         "milestones": {
             "first_deposit": bool(db.query(CryptoDeposit).filter(CryptoDeposit.user_id == current_user.id).first()),
             "first_referral": len(referrals) > 0,
             "mining_active": len(active_sessions) > 0
         }
     }
-    
+
     return UserAnalyticsResponse(
         portfolio_overview=portfolio_overview,
         mining_performance=mining_performance,
