@@ -1349,9 +1349,8 @@ async def login_user(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "requires_pin_verify": True,  # frontend must redirect to PIN verify
-        "requires_2fa": getattr(user, "two_fa_enabled", False),  # optional for frontend 2FA UI
-        "user": UserResponse.from_orm(user)
+        "user": UserResponse.from_orm(user),
+        "requires_2fa": getattr(user, "two_fa_enabled", False)  # optional for frontend 2FA UI
     }
 
 @app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
