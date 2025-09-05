@@ -816,7 +816,7 @@ class ConnectionManager:
 
     def disconnect(self, user_id: int):
         self.active_connections.pop(user_id, None)
-        self.mining_progress.pop(user_id, None)
+        # keep mining_progress in memory for DB sync
 
     async def send_personal_message(self, user_id: int, message: dict):
         websocket = self.active_connections.get(user_id)
@@ -826,15 +826,6 @@ class ConnectionManager:
 
 # Instantiate the manager
 manager = ConnectionManager()
-
-
-# --- DB dependency ---
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
         
 # Authentication Schemas
 class UserLogin(BaseModel):
@@ -2479,7 +2470,7 @@ def sync_mining_to_db():
 
 
 
-@app.get("/api/mining/live-progress")
+"""@app.get("/api/mining/live-progress")
 def get_live_mining_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -2524,7 +2515,7 @@ def get_live_mining_progress(
             "elapsed_hours": float(Decimal(elapsed_seconds) / Decimal(3600))
         })
 
-    return {"active_sessions": progress_data}
+    return {"active_sessions": progress_data}"""
 
 
 @app.put("/api/admin/mining/{session_id}/pause")
@@ -2562,7 +2553,7 @@ def pause_mining_session(
 # =============================================================================
 
 
-@app.on_event("startup")
+"""@app.on_event("startup")
 @repeat_every(seconds=60)  # Run every minute
 def process_mining_sessions():
     """Background task to process active mining sessions every minute"""
@@ -2624,7 +2615,7 @@ def process_mining_sessions():
         print(f"❌ Error processing mining sessions: {e}")
         db.rollback()
     finally:
-        db.close()
+        db.close()"""
 
 
 @app.on_event("startup")
