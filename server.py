@@ -414,6 +414,7 @@ class MiningSession(Base):
     is_paused = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     paused_at = Column(DateTime(timezone=True), nullable=True)
+    last_mined = Column(DateTime(timezone=True), nullable=True, server_default=func.now())
 
     user = relationship("User", back_populates="mining_sessions")
 
