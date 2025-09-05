@@ -2334,11 +2334,12 @@ def get_live_mining_progress(
     progress_data = []
     for session in active_sessions:
         if session.created_at:
-            elapsed_seconds = (datetime.utcnow() - session.created_at).total_seconds()
+            # Use timezone-aware datetime
+            elapsed_seconds = (datetime.now(timezone.utc) - session.created_at).total_seconds()
         else:
             elapsed_seconds = 0
 
-        deposited_amount = session.deposited_amount
+        deposited_amount = Decimal(session.deposited_amount)
         mining_rate = Decimal(session.mining_rate) / Decimal(100)
 
         mining_per_second = (deposited_amount * mining_rate) / Decimal(24 * 3600)
@@ -2359,6 +2360,7 @@ def get_live_mining_progress(
         })
 
     return {"active_sessions": progress_data}
+
 
 @app.put("/api/admin/mining/{session_id}/pause")
 def pause_mining_session(
