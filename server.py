@@ -2327,114 +2327,53 @@ async def confirm_deposit(
     return {"message": f"Deposit {action}ed successfully"}
 
 
-@app.get("/api/mining/live-progress")
-def mining_live_progress(current_user: User = Depends(get_current_user)):
-    """
-    Returns live mining progress for all active sessions of the user.
-    Uses only the in-memory `pending_commits` updated by the startup worker.
-    No calculations are performed here.
-    """
-    progress_data = []
+@app.post("/api/mining/live-progress")
+def mining_live_progress(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    total_mined = Decimal(0)
+    sessions_data = []
 
-    # Get user's sessions from in-memory pending_commits
-    user_sessions = pending_commits.get(current_user.id, {})
+    # Fetch active mining sessions
+    active_sessions = db.query(MiningSession).filter(
+        MiningSession.user_id == current_user.id,
+        MiningSession.is_active == True
+    ).all()
 
-    for session_id, in_memory_mined in user_sessions.items():
-        # Fetch session static info from user's related sessions
-        session = next((s for s in current_user.mining_sessions if s.id == session_id), None)
-        if not session:
-            continue
+    for session in active_sessions:
+        deposited_amount = Decimal(session.deposited_amount)
+        mining_rate = Decimal(session.mining_rate) / Decimal(100)
+        total_per_day = deposited_amount * mining_rate
+        seconds_in_day = Decimal(24 * 3600)
 
-        # Compute live balance = DB balance + in-memory mined amount
-        if session.crypto_type == "bitcoin":
-            live_balance = current_user.bitcoin_balance + in_memory_mined
+        last_mined = session.last_mined or session.created_at
+        elapsed_seconds = Decimal((now - last_mined).total_seconds())
+        mined_amount = total_per_day / seconds_in_day * elapsed_seconds
+
+        # Update session mined amount
+        session.mined_amount += mined_amount
+        session.last_mined = now
+
+        # Update user balance
+        if session.crypto_type.lower() == "bitcoin":
+            current_user.bitcoin_balance += mined_amount
         else:
-            live_balance = current_user.ethereum_balance + in_memory_mined
+            current_user.ethereum_balance += mined_amount
 
-        progress_data.append({
+        total_mined += mined_amount
+
+        sessions_data.append({
             "session_id": session.id,
             "crypto_type": session.crypto_type,
             "deposited_amount": float(session.deposited_amount),
             "mining_rate_percent": float(session.mining_rate),
-            "current_mined": float(in_memory_mined),
-            "balance": float(live_balance),
+            "current_mined": float(mined_amount),
+            "balance": float(current_user.bitcoin_balance if session.crypto_type.lower() == "bitcoin" else current_user.ethereum_balance)
         })
 
-    return {"active_sessions": progress_data}
+    db.commit()  # Persist balances and last_mined
 
-# In-memory store for active sessions and pending commits
-active_sessions_cache: dict[int, MiningSession] = {}  # session_id -> MiningSession
-pending_commits: dict[int, dict[int, Decimal]] = {}   # user_id -> {session_id: mined_amount}
-last_commit_time = datetime.now(timezone.utc)
+    return {"message": "Mining synced", "total_mined": float(total_mined), "sessions": sessions_data}
 
-@app.on_event("startup")
-def load_active_sessions():
-    """Load all active mining sessions into memory at startup."""
-    global active_sessions_cache
-    with SessionLocal() as db:
-        sessions = db.query(MiningSession).filter(MiningSession.is_active == True).all()
-        active_sessions_cache = {s.id: s for s in sessions}
-
-@app.on_event("startup")
-@repeat_every(seconds=1)  # Tick every second
-def background_mining_tick():
-    global last_commit_time
-    now = datetime.now(timezone.utc)
-
-    # Update in-memory mined amounts for all active sessions
-    for session in active_sessions_cache.values():
-        deposited_amount = Decimal(session.deposited_amount)
-        mining_rate = Decimal(session.mining_rate) / Decimal(100)
-        total_mined_per_day = deposited_amount * mining_rate
-        seconds_in_day = Decimal(24 * 3600)
-
-        last_mined = session.last_mined.replace(tzinfo=timezone.utc)
-        elapsed_seconds = Decimal((now - last_mined).total_seconds())
-
-        mining_per_second = total_mined_per_day / seconds_in_day
-        mined_since_last = mining_per_second * elapsed_seconds
-
-        # Store mined amount in pending commits
-        if session.user_id not in pending_commits:
-            pending_commits[session.user_id] = {}
-        if session.id not in pending_commits[session.user_id]:
-            pending_commits[session.user_id][session.id] = Decimal(0)
-        pending_commits[session.user_id][session.id] += mined_since_last
-
-        # Update session in memory for frontend progress
-        session.mined_amount += mined_since_last
-        session.last_mined = now
-
-    # Commit to DB every 5 minutes
-    if (now - last_commit_time) >= timedelta(minutes=5):
-        with SessionLocal() as db:
-            for user_id, sessions_dict in pending_commits.items():
-                user = db.query(User).filter(User.id == user_id).first()
-                if not user:
-                    continue
-
-                for session_id, mined_amount in sessions_dict.items():
-                    session = db.query(MiningSession).filter(MiningSession.id == session_id).first()
-                    if not session:
-                        continue
-
-                    # Update user balance
-                    if session.crypto_type == "bitcoin":
-                        user.bitcoin_balance += mined_amount
-                    else:
-                        user.ethereum_balance += mined_amount
-
-                    # Update session last mined time
-                    session.last_mined = now
-
-            db.commit()
-            pending_commits.clear()
-            last_commit_time = now
-
-# Utility to add a new session to in-memory cache when approved
-def add_new_session_to_cache(session: MiningSession):
-    """Call this after creating a new mining session in DB."""
-    active_sessions_cache[session.id] = session
 
 
 @app.put("/api/admin/mining/{session_id}/pause")
