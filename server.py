@@ -1256,7 +1256,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 # Reusable function to get user from token
-def get_current_user(token: str | None = None, db: Session = Depends(get_db)):
+def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Retrieves the current user either from HTTP Authorization header (Depends(security))
     or directly from a token string (for WebSocket).
