@@ -2333,7 +2333,10 @@ async def confirm_deposit(
 
 
 @app.post("/api/mining/live-progress")
-def mining_live_progress(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def mining_live_progress(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     now = datetime.now(timezone.utc)
     total_mined = Decimal(0)
     sessions_data = []
@@ -2359,11 +2362,18 @@ def mining_live_progress(current_user: User = Depends(get_current_user), db: Ses
         session.mined_amount = (session.mined_amount or Decimal(0)) + mined_amount
         session.last_mined = now
 
-        # Update user balance
-        if session.crypto_type.lower() == "bitcoin":
+        # Normalize crypto_type
+        crypto_type = session.crypto_type.lower().strip()
+
+        # Update user balance based on crypto type
+        if crypto_type in ["bitcoin", "btc"]:
             current_user.bitcoin_balance = (current_user.bitcoin_balance or Decimal(0)) + mined_amount
-        else:
+            balance = float(current_user.bitcoin_balance)
+        elif crypto_type in ["ethereum", "eth"]:
             current_user.ethereum_balance = (current_user.ethereum_balance or Decimal(0)) + mined_amount
+            balance = float(current_user.ethereum_balance)
+        else:
+            raise ValueError(f"Unsupported crypto type: {session.crypto_type}")
 
         total_mined += mined_amount
 
@@ -2373,7 +2383,7 @@ def mining_live_progress(current_user: User = Depends(get_current_user), db: Ses
             "deposited_amount": float(session.deposited_amount),
             "mining_rate_percent": float(session.mining_rate),
             "current_mined": float(mined_amount),
-            "balance": float(current_user.bitcoin_balance if session.crypto_type.lower() == "bitcoin" else current_user.ethereum_balance)
+            "balance": balance
         })
 
     db.commit()  # Persist balances and last_mined
