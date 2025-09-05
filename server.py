@@ -2328,6 +2328,7 @@ async def confirm_deposit(
     return {"message": f"Deposit {action}ed successfully"}
 
 
+
 @app.post("/api/mining/live-progress")
 def mining_live_progress(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
@@ -2346,19 +2347,20 @@ def mining_live_progress(current_user: User = Depends(get_current_user), db: Ses
         total_per_day = deposited_amount * mining_rate
         seconds_in_day = Decimal(24 * 3600)
 
+        # Ensure last_mined is not None
         last_mined = session.last_mined or session.created_at
         elapsed_seconds = Decimal((now - last_mined).total_seconds())
         mined_amount = total_per_day / seconds_in_day * elapsed_seconds
 
-        # Update session mined amount
-        session.mined_amount += mined_amount
+        # Update session mined amount safely
+        session.mined_amount = (session.mined_amount or Decimal(0)) + mined_amount
         session.last_mined = now
 
         # Update user balance
         if session.crypto_type.lower() == "bitcoin":
-            current_user.bitcoin_balance += mined_amount
+            current_user.bitcoin_balance = (current_user.bitcoin_balance or Decimal(0)) + mined_amount
         else:
-            current_user.ethereum_balance += mined_amount
+            current_user.ethereum_balance = (current_user.ethereum_balance or Decimal(0)) + mined_amount
 
         total_mined += mined_amount
 
@@ -2373,8 +2375,11 @@ def mining_live_progress(current_user: User = Depends(get_current_user), db: Ses
 
     db.commit()  # Persist balances and last_mined
 
-    return {"message": "Mining synced", "total_mined": float(total_mined), "sessions": sessions_data}
-
+    return {
+        "message": "Mining synced",
+        "total_mined": float(total_mined),
+        "sessions": sessions_data
+    }
 
 
 @app.put("/api/admin/mining/{session_id}/pause")
