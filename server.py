@@ -45,7 +45,6 @@ from sqlalchemy import exists
 # Authentication imports
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from your_auth import decode_jwt_token
 
 # Email imports
 from email.mime.text import MIMEText
