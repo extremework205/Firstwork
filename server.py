@@ -2331,6 +2331,7 @@ async def confirm_deposit(
 
 @app.websocket("/ws/mining/live-progress")
 async def websocket_mining_progress(websocket: WebSocket):
+    # Accept immediately
     await websocket.accept()
 
     # Extract token from query params
@@ -2339,15 +2340,15 @@ async def websocket_mining_progress(websocket: WebSocket):
         await websocket.close(code=1008, reason="Missing auth token")
         return
 
-    # Decode/validate token to get user using WS helper function
-    db = next(get_db())
+    # Decode/validate token using your WS helper in a thread
     try:
-        user: User = get_user_from_ws_token(token, db)
+        db = next(get_db())
+        user: User = await asyncio.to_thread(get_user_from_ws_token, token, db)
     except HTTPException:
         await websocket.close(code=1008, reason="Invalid token")
         return
 
-    # Connect the user to the manager
+    # Connect user to manager
     await manager.connect(user.id, websocket)
 
     try:
@@ -2357,7 +2358,11 @@ async def websocket_mining_progress(websocket: WebSocket):
 
             if sessions_progress:
                 session_ids = list(sessions_progress.keys())
-                db_sessions = db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
+
+                # DB queries in thread to avoid blocking
+                db_sessions = await asyncio.to_thread(
+                    lambda: db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
+                )
                 db_sessions_map = {s.id: s for s in db_sessions}
 
                 for session_id, current_mined in sessions_progress.items():
