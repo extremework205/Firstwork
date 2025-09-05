@@ -827,31 +827,24 @@ class UserResponse(UserBase):
         from_attributes = True
 
 
-# --- WebSocket Manager for multiple users ---
-class ConnectionManager:
+
+"""class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[int, WebSocket] = {}  # user_id -> websocket
         self.mining_progress: dict[int, dict[int, Decimal]] = {}  # user_id -> {session_id: mined_amount}
 
     async def connect(self, user_id: int, websocket: WebSocket):
-        """
-        Register an accepted websocket connection. Do NOT call websocket.accept() here.
-        Accept should happen in the route.
-        """
+    
         self.active_connections[user_id] = websocket
         if user_id not in self.mining_progress:
             self.mining_progress[user_id] = {}
 
     async def disconnect(self, user_id: int):
-        """
-        Async disconnect. Removes the connection but keeps mining_progress for DB sync.
-        """
+    
         self.active_connections.pop(user_id, None)
 
     async def send_personal_message(self, user_id: int, message: dict):
-        """
-        Send a message to a single user if they are connected.
-        """
+    
         websocket = self.active_connections.get(user_id)
         if websocket:
             try:
@@ -860,8 +853,8 @@ class ConnectionManager:
                 print(f"Error sending WS message to user {user_id}: {e}")
 
 
-# Instantiate the manager
-manager = ConnectionManager()
+
+manager = ConnectionManager()"""
         
 # Authentication Schemas
 class UserLogin(BaseModel):
@@ -2415,7 +2408,7 @@ async def websocket_mining_progress(websocket: WebSocket):
 # --- Background task to persist mined amounts ---
 
 # --- Optimized Background Mining Tick ---
-@app.on_event("startup")
+"""@app.on_event("startup")
 @repeat_every(seconds=1)
 def background_mining_tick():
     now = datetime.now(timezone.utc)
@@ -2444,7 +2437,7 @@ def background_mining_tick():
             # Update in-memory store
             manager.mining_progress[user_id][session_id] = current_mined
 
-            db.close()
+            db.close()"""
 
 
 # --- Optimized DB Sync (commits only changed sessions) ---
@@ -2484,39 +2477,39 @@ def sync_mining_to_db():
         db.close()
 
 
-
-"""@app.get("/api/mining/live-progress")
-def get_live_mining_progress(
+@app.get("/api/mining/live-progress")
+def get_mining_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    active_sessions = db.query(MiningSession).filter(
-        MiningSession.user_id == current_user.id,
-        MiningSession.is_active == True
-    ).all()
-    
+    """
+    Returns current mining progress for all active sessions of the user.
+    Client can poll this endpoint every second or few seconds.
+    """
     progress_data = []
-    for session in active_sessions:
-        if session.created_at:
-            # Make sure created_at is timezone-aware
-            if session.created_at.tzinfo is None:
-                created_at_aware = session.created_at.replace(tzinfo=timezone.utc)
-            else:
-                created_at_aware = session.created_at
 
-            elapsed_seconds = (datetime.now(timezone.utc) - created_at_aware).total_seconds()
-        else:
-            elapsed_seconds = 0
+    # Suppose you store live progress in memory, similar to WebSocket manager
+    sessions_progress = manager.mining_progress.get(current_user.id, {})  # {session_id: mined_amount}
+    if not sessions_progress:
+        return {"active_sessions": progress_data}
+
+    session_ids = list(sessions_progress.keys())
+    db_sessions = db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
+    db_sessions_map = {s.id: s for s in db_sessions}
+
+    for session_id, current_mined in sessions_progress.items():
+        session = db_sessions_map.get(session_id)
+        if not session:
+            continue
 
         deposited_amount = Decimal(session.deposited_amount)
         mining_rate = Decimal(session.mining_rate) / Decimal(100)
-
-        # Mining per second
-        mining_per_second = (deposited_amount * mining_rate) / Decimal(24 * 3600)
-        current_mined = min(
-            mining_per_second * Decimal(elapsed_seconds),
-            deposited_amount * mining_rate
+        elapsed_seconds = Decimal(
+            (datetime.now(timezone.utc) - session.created_at.replace(tzinfo=timezone.utc)).total_seconds()
         )
+
+        user_balance = float(current_user.bitcoin_balance if session.crypto_type == "bitcoin" else current_user.ethereum_balance)
+        live_balance = user_balance + float(current_mined - Decimal(session.mined_amount))
 
         progress_data.append({
             "session_id": session.id,
@@ -2524,12 +2517,13 @@ def get_live_mining_progress(
             "deposited_amount": float(deposited_amount),
             "mining_rate": float(mining_rate * 100),
             "current_mined": float(current_mined),
-            "mining_per_second": float(mining_per_second),
-            "progress_percentage": float((current_mined / (deposited_amount * mining_rate)) * Decimal(100)) if mining_rate > 0 else 0,
-            "elapsed_hours": float(Decimal(elapsed_seconds) / Decimal(3600))
+            "balance": live_balance,
+            "progress_percentage": float((current_mined / (deposited_amount * mining_rate)) * 100) if mining_rate > 0 else 0,
+            "elapsed_hours": float(elapsed_seconds / Decimal(3600)),
         })
 
-    return {"active_sessions": progress_data}"""
+    return {"active_sessions": progress_data}
+
 
 
 @app.put("/api/admin/mining/{session_id}/pause")
