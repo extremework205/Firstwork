@@ -708,40 +708,40 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 # Reusable function to get user from token
+
 def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
     """
-    Retrieves the current user either from HTTP Authorization header (Depends(security))
-    or directly from a token string (for WebSocket).
+    Retrieves the current user either from:
+    1. HTTPBearer (normal endpoint) via token=Depends(security)
+    2. Direct token string (for WebSocket) via token=websocket.query_params.get("token")
     """
     credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
+        status_code=401,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # If token is provided as string (WebSocket)
-    if isinstance(token, str):
+    # Determine actual JWT token
+    if hasattr(token, "credentials"):  # HTTP endpoint token
+        jwt_token = token.credentials
+    elif isinstance(token, str):  # WebSocket token
         jwt_token = token
     else:
-        # Otherwise assume it's a FastAPI HTTPBearer token
-        jwt_token = token.credentials if token else None
-
-    if not jwt_token:
         raise credentials_exception
 
     try:
         payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
-        if email is None:
+        if not email:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
 
     user = db.query(User).filter(User.email == email).first()
-    if user is None:
+    if not user:
         raise credentials_exception
     return user
-
+    
 def get_current_admin_user(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
