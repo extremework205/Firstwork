@@ -2678,18 +2678,21 @@ async def get_user_analytics_dashboard(
     # ---------------------
     # Portfolio Overview
     # ---------------------
-    usd_values = calculate_usd_values(current_user, admin_settings)
+    usd_values = calculate_usd_values(current_user, admin_settings) or {}
+
+    total_balance_usd = usd_values.get("total_balance_usd", 0)
+    bitcoin_balance_usd = usd_values.get("bitcoin_balance_usd", 0)
+    ethereum_balance_usd = usd_values.get("ethereum_balance_usd", 0)
+
     portfolio_overview = {
-        "total_value_usd": usd_values["total_balance_usd"],
-        "bitcoin_balance": current_user.bitcoin_balance,
-        "ethereum_balance": current_user.ethereum_balance,
-        "bitcoin_value_usd": usd_values["bitcoin_balance_usd"],
-        "ethereum_value_usd": usd_values["ethereum_balance_usd"],
+        "total_value_usd": total_balance_usd,
+        "bitcoin_balance": current_user.bitcoin_balance or 0,
+        "ethereum_balance": current_user.ethereum_balance or 0,
+        "bitcoin_value_usd": bitcoin_balance_usd,
+        "ethereum_value_usd": ethereum_balance_usd,
         "asset_allocation": {
-            "bitcoin_percentage": (usd_values["bitcoin_balance_usd"] / usd_values["total_balance_usd"] * 100)
-            if usd_values["total_balance_usd"] > 0 else 0,
-            "ethereum_percentage": (usd_values["ethereum_value_usd"] / usd_values["total_balance_usd"] * 100)
-            if usd_values["total_balance_usd"] > 0 else 0
+            "bitcoin_percentage": (bitcoin_balance_usd / total_balance_usd * 100) if total_balance_usd > 0 else 0,
+            "ethereum_percentage": (ethereum_balance_usd / total_balance_usd * 100) if total_balance_usd > 0 else 0
         }
     }
 
@@ -2701,11 +2704,11 @@ async def get_user_analytics_dashboard(
         MiningSession.is_active == True
     ).all()
 
-    total_mining_power = sum(Decimal(session.deposited_amount) for session in active_sessions)
-    avg_mining_rate = (sum(Decimal(session.mining_rate) for session in active_sessions) / len(active_sessions)) if active_sessions else Decimal(0)
+    total_mining_power = sum(Decimal(session.deposited_amount or 0) for session in active_sessions)
+    avg_mining_rate = (sum(Decimal(session.mining_rate or 0) for session in active_sessions) / len(active_sessions)) if active_sessions else Decimal(0)
 
     daily_estimated_earnings = sum(
-        (Decimal(session.deposited_amount) * (Decimal(session.mining_rate) / Decimal(100))) / Decimal(24)
+        (Decimal(session.deposited_amount or 0) * (Decimal(session.mining_rate or 0) / Decimal(100))) / Decimal(24)
         for session in active_sessions
     )
 
@@ -2728,8 +2731,8 @@ async def get_user_analytics_dashboard(
         TransactionHistory.created_at >= thirty_days_ago
     ).all()
 
-    mining_earnings = sum(Decimal(t.amount) for t in earnings_transactions if t.transaction_type == "mining_reward")
-    referral_earnings = sum(Decimal(t.amount) for t in earnings_transactions if t.transaction_type == "referral_reward")
+    mining_earnings = sum(Decimal(t.amount or 0) for t in earnings_transactions if t.transaction_type == "mining_reward")
+    referral_earnings = sum(Decimal(t.amount or 0) for t in earnings_transactions if t.transaction_type == "referral_reward")
 
     earnings_history = {
         "total_earnings": float(mining_earnings + referral_earnings),
@@ -2770,13 +2773,12 @@ async def get_user_analytics_dashboard(
     }
 
     for transaction in all_transactions:
-        # Count by type
-        transaction_analytics["transaction_types"][transaction.transaction_type] = \
-            transaction_analytics["transaction_types"].get(transaction.transaction_type, 0) + 1
+        t_type = transaction.transaction_type or "unknown"
+        transaction_analytics["transaction_types"][t_type] = transaction_analytics["transaction_types"].get(t_type, 0) + 1
 
-        # Volume by crypto
-        if transaction.crypto_type:
-            transaction_analytics["volume_by_crypto"][transaction.crypto_type] += float(transaction.amount)
+        crypto_type = transaction.crypto_type.lower() if transaction.crypto_type else None
+        if crypto_type in ["bitcoin", "ethereum"]:
+            transaction_analytics["volume_by_crypto"][crypto_type] += float(transaction.amount or 0)
 
     # ---------------------
     # Referral Performance
@@ -2788,9 +2790,9 @@ async def get_user_analytics_dashboard(
 
     referral_performance = {
         "total_referrals": len(referrals),
-        "total_rewards": float(sum(Decimal(r.reward_amount) for r in referral_rewards)),
-        "active_referrals": len([r for r in referrals if r.status == "approved"]),
-        "referral_code": current_user.referral_code
+        "total_rewards": float(sum(Decimal(r.reward_amount or 0) for r in referral_rewards)),
+        "active_referrals": len([r for r in referrals if getattr(r, "status", None) == "approved"]),
+        "referral_code": current_user.referral_code or ""
     }
 
     # ---------------------
@@ -2804,11 +2806,11 @@ async def get_user_analytics_dashboard(
     if first_date.tzinfo is None:
         first_date = first_date.replace(tzinfo=timezone.utc)
 
-    days_active = (now - first_date).days
+    days_active = max((now - first_date).days, 1)
 
     growth_metrics = {
         "days_active": days_active,
-        "average_daily_earnings": float((mining_earnings + referral_earnings) / max(days_active, 1)),
+        "average_daily_earnings": float((mining_earnings + referral_earnings) / days_active),
         "growth_rate": 0,
         "milestones": {
             "first_deposit": bool(db.query(CryptoDeposit).filter(CryptoDeposit.user_id == current_user.id).first()),
