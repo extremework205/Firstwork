@@ -685,7 +685,7 @@ def process_referral_rewards(db: Session, new_user: User):
     db.commit()
 
 # =============================================================================
-# AUTHENTICATION SETUP
+# AUTHENTICATION
 # =============================================================================
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -699,38 +699,45 @@ def get_password_hash(password):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# Reusable function to get user from token
+def get_current_user(token: str = Depends(security), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
-def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
+
+def get_user_from_ws_token(token: Optional[str], db: Session) -> User:
     """
-    Retrieves the current user either from:
-    1. HTTPBearer (normal endpoint) via token=Depends(security)
-    2. Direct token string (for WebSocket) via token=websocket.query_params.get("token")
+    Decode JWT token from WebSocket query param (plain string) and return User object.
     """
     credentials_exception = HTTPException(
-        status_code=401,
+        status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # Determine actual JWT token
-    if hasattr(token, "credentials"):  # HTTP endpoint token
-        jwt_token = token.credentials
-    elif isinstance(token, str):  # WebSocket token
-        jwt_token = token
-    else:
+    if not token:
         raise credentials_exception
 
     try:
-        payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if not email:
             raise credentials_exception
@@ -740,8 +747,9 @@ def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db))
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise credentials_exception
+
     return user
-    
+
 def get_current_admin_user(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -751,6 +759,7 @@ def get_admin_user(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
 
 # =============================================================================
 # PYDANTIC SCHEMAS (Ordered to resolve forward references)
@@ -1236,69 +1245,7 @@ app.add_middleware(
 # AUTHENTICATION
 # =============================================================================
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-security = HTTPBearer()
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-# Reusable function to get user from token
-def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
-    """
-    Retrieves the current user either from HTTP Authorization header (Depends(security))
-    or directly from a token string (for WebSocket).
-    """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-    # If token is provided as string (WebSocket)
-    if isinstance(token, str):
-        jwt_token = token
-    else:
-        # Otherwise assume it's a FastAPI HTTPBearer token
-        jwt_token = token.credentials if token else None
-
-    if not jwt_token:
-        raise credentials_exception
-
-    try:
-        payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-
-    user = db.query(User).filter(User.email == email).first()
-    if user is None:
-        raise credentials_exception
-    return user
-
-def get_current_admin_user(current_user: User = Depends(get_current_user)):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return current_user
-
-def get_admin_user(current_user: User = Depends(get_current_user)):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return current_user
 
 # =============================================================================
 # ENHANCED AUTHENTICATION ENDPOINTS
@@ -2392,10 +2339,10 @@ async def websocket_mining_progress(websocket: WebSocket):
         await websocket.close(code=1008, reason="Missing auth token")
         return
 
-    # Decode/validate token to get user using reusable function
+    # Decode/validate token to get user using WS helper function
     db = next(get_db())
     try:
-        user: User = get_current_user(token, db)
+        user: User = get_user_from_ws_token(token, db)
     except HTTPException:
         await websocket.close(code=1008, reason="Invalid token")
         return
