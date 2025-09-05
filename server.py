@@ -45,6 +45,7 @@ from sqlalchemy import exists
 # Authentication imports
 from passlib.context import CryptContext
 from jose import JWTError, jwt
+from your_auth import decode_jwt_token
 
 # Email imports
 from email.mime.text import MIMEText
@@ -2349,17 +2350,36 @@ async def confirm_deposit(
 
 
 # --- WebSocket Route (optimized) ---
+
+
 @app.websocket("/ws/mining/live-progress")
-async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(get_current_user)):
+async def websocket_mining_progress(websocket: WebSocket):
+    # Accept the connection first
+    await websocket.accept()
+
+    # Extract token from query params
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=1008, reason="Missing auth token")
+        return
+
+    # Decode/validate token to get user
+    try:
+        user: User = await decode_jwt_token(token)  # returns your User object
+    except Exception as e:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
+    # Connect the user to the manager
     await manager.connect(user.id, websocket)
-    
+
     try:
         while True:
             sessions_progress = manager.mining_progress.get(user.id, {})
             progress_data = []
 
             if sessions_progress:
-                db = next(get_db())  # One DB session per tick
+                db = next(get_db())  # one DB session per tick
                 session_ids = list(sessions_progress.keys())
                 db_sessions = db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
                 db_sessions_map = {s.id: s for s in db_sessions}
@@ -2371,21 +2391,23 @@ async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(g
 
                     deposited_amount = Decimal(session.deposited_amount)
                     mining_rate = Decimal(session.mining_rate) / Decimal(100)
-                    elapsed_seconds = Decimal((datetime.now(timezone.utc) - session.created_at.replace(tzinfo=timezone.utc)).total_seconds())
+                    elapsed_seconds = Decimal(
+                        (datetime.now(timezone.utc) - session.created_at.replace(tzinfo=timezone.utc)).total_seconds()
+                    )
 
                     # Live balance calculation
-                    user_balance = float(user.bitcoin_balance if session.crypto_type=="bitcoin" else user.ethereum_balance)
+                    user_balance = float(user.bitcoin_balance if session.crypto_type == "bitcoin" else user.ethereum_balance)
                     live_balance = user_balance + float(current_mined - Decimal(session.mined_amount))
 
                     progress_data.append({
                         "session_id": session.id,
                         "crypto_type": session.crypto_type,
                         "deposited_amount": float(deposited_amount),
-                        "mining_rate": float(mining_rate*100),
+                        "mining_rate": float(mining_rate * 100),
                         "current_mined": float(current_mined),
                         "balance": live_balance,
-                        "progress_percentage": float((current_mined / (deposited_amount * mining_rate))*100) if mining_rate>0 else 0,
-                        "elapsed_hours": float(elapsed_seconds/Decimal(3600))
+                        "progress_percentage": float((current_mined / (deposited_amount * mining_rate)) * 100) if mining_rate > 0 else 0,
+                        "elapsed_hours": float(elapsed_seconds / Decimal(3600)),
                     })
                 db.close()
 
