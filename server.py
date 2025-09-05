@@ -2320,6 +2320,7 @@ async def confirm_deposit(
 # MINING ENDPOINTS
 # =============================================================================
 
+
 @app.get("/api/mining/live-progress")
 def get_live_mining_progress(
     current_user: User = Depends(get_current_user),
@@ -2334,14 +2335,20 @@ def get_live_mining_progress(
     progress_data = []
     for session in active_sessions:
         if session.created_at:
-            # Use timezone-aware datetime
-            elapsed_seconds = (datetime.now(timezone.utc) - session.created_at).total_seconds()
+            # Make sure created_at is timezone-aware
+            if session.created_at.tzinfo is None:
+                created_at_aware = session.created_at.replace(tzinfo=timezone.utc)
+            else:
+                created_at_aware = session.created_at
+
+            elapsed_seconds = (datetime.now(timezone.utc) - created_at_aware).total_seconds()
         else:
             elapsed_seconds = 0
 
         deposited_amount = Decimal(session.deposited_amount)
         mining_rate = Decimal(session.mining_rate) / Decimal(100)
 
+        # Mining per second
         mining_per_second = (deposited_amount * mining_rate) / Decimal(24 * 3600)
         current_mined = min(
             mining_per_second * Decimal(elapsed_seconds),
