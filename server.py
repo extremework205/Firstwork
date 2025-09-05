@@ -707,20 +707,36 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(security), db: Session = Depends(get_db)):
+# Reusable function to get user from token
+def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Retrieves the current user either from HTTP Authorization header (Depends(security))
+    or directly from a token string (for WebSocket).
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # If token is provided as string (WebSocket)
+    if isinstance(token, str):
+        jwt_token = token
+    else:
+        # Otherwise assume it's a FastAPI HTTPBearer token
+        jwt_token = token.credentials if token else None
+
+    if not jwt_token:
+        raise credentials_exception
+
     try:
-        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    
+
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
