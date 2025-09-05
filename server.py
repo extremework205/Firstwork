@@ -2357,57 +2357,47 @@ async def confirm_deposit(
 # =============================================================================
 
 
-# --- WebSocket route ---
+# --- WebSocket Route (optimized) ---
 @app.websocket("/ws/mining/live-progress")
-async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(get_current_user)):
     await manager.connect(user.id, websocket)
     
     try:
         while True:
-            active_sessions = db.query(MiningSession).filter(
-                MiningSession.user_id == user.id,
-                MiningSession.is_active == True
-            ).all()
-
-            now = datetime.now(timezone.utc)
+            sessions_progress = manager.mining_progress.get(user.id, {})
             progress_data = []
 
-            for session in active_sessions:
-                if not session.created_at:
-                    continue
+            if sessions_progress:
+                db = next(get_db())  # One DB session per tick
+                session_ids = list(sessions_progress.keys())
+                db_sessions = db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
+                db_sessions_map = {s.id: s for s in db_sessions}
 
-                created_at = session.created_at.replace(tzinfo=timezone.utc) if session.created_at.tzinfo is None else session.created_at
+                for session_id, current_mined in sessions_progress.items():
+                    session = db_sessions_map.get(session_id)
+                    if not session:
+                        continue
 
-                elapsed_seconds = Decimal((now - created_at).total_seconds())
-                deposited_amount = Decimal(session.deposited_amount)
-                mining_rate = Decimal(session.mining_rate) / Decimal(100)
-                mining_per_second = deposited_amount * mining_rate / Decimal(24*3600)
+                    deposited_amount = Decimal(session.deposited_amount)
+                    mining_rate = Decimal(session.mining_rate) / Decimal(100)
+                    elapsed_seconds = Decimal((datetime.now(timezone.utc) - session.created_at.replace(tzinfo=timezone.utc)).total_seconds())
 
-                # --- Get in-memory mined amount ---
-                current_mined = manager.mining_progress[user.id].get(session.id, Decimal(session.mined_amount))
+                    # Live balance calculation
+                    user_balance = float(user.bitcoin_balance if session.crypto_type=="bitcoin" else user.ethereum_balance)
+                    live_balance = user_balance + float(current_mined - Decimal(session.mined_amount))
 
-                # Increment for this tick
-                current_mined += mining_per_second
-                current_mined = min(current_mined, deposited_amount * mining_rate)
+                    progress_data.append({
+                        "session_id": session.id,
+                        "crypto_type": session.crypto_type,
+                        "deposited_amount": float(deposited_amount),
+                        "mining_rate": float(mining_rate*100),
+                        "current_mined": float(current_mined),
+                        "balance": live_balance,
+                        "progress_percentage": float((current_mined / (deposited_amount * mining_rate))*100) if mining_rate>0 else 0,
+                        "elapsed_hours": float(elapsed_seconds/Decimal(3600))
+                    })
+                db.close()
 
-                # Update in-memory
-                manager.mining_progress[user.id][session.id] = current_mined
-
-                # Live balance calculation (without DB commit)
-                live_balance = float(user.bitcoin_balance if session.crypto_type=="bitcoin" else user.ethereum_balance) + float(current_mined - Decimal(session.mined_amount))
-
-                progress_data.append({
-                    "session_id": session.id,
-                    "crypto_type": session.crypto_type,
-                    "deposited_amount": float(deposited_amount),
-                    "mining_rate": float(mining_rate*100),
-                    "current_mined": float(current_mined),
-                    "balance": live_balance,
-                    "progress_percentage": float((current_mined / (deposited_amount * mining_rate))*100) if mining_rate>0 else 0,
-                    "elapsed_hours": float(elapsed_seconds/Decimal(3600))
-                })
-
-            # Send live progress
             await manager.send_personal_message(user.id, {"active_sessions": progress_data})
             await asyncio.sleep(1)
 
@@ -2417,32 +2407,76 @@ async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(g
         manager.disconnect(user.id)
 
 # --- Background task to persist mined amounts ---
+
+# --- Optimized Background Mining Tick ---
 @app.on_event("startup")
-@repeat_every(seconds=60)  # Save to DB every minute
-async def sync_mining_to_db():
+@repeat_every(seconds=1)
+def background_mining_tick():
+    now = datetime.now(timezone.utc)
+
+    # Loop only through users with active in-memory sessions
+    for user_id, sessions in manager.mining_progress.items():
+        for session_id, current_mined in sessions.items():
+            # Fetch session data from DB once
+            db = next(get_db())
+            session = db.query(MiningSession).filter(MiningSession.id == session_id).first()
+            if not session or not session.created_at:
+                db.close()
+                continue
+
+            created_at = session.created_at.replace(tzinfo=timezone.utc) if session.created_at.tzinfo is None else session.created_at
+            elapsed_seconds = Decimal((now - created_at).total_seconds())
+
+            deposited_amount = Decimal(session.deposited_amount)
+            mining_rate = Decimal(session.mining_rate) / Decimal(100)
+            mining_per_second = deposited_amount * mining_rate / Decimal(24 * 3600)
+
+            # Increment mined amount
+            current_mined += mining_per_second
+            current_mined = min(current_mined, deposited_amount * mining_rate)
+
+            # Update in-memory store
+            manager.mining_progress[user_id][session_id] = current_mined
+
+            db.close()
+
+
+# --- Optimized DB Sync (commits only changed sessions) ---
+@app.on_event("startup")
+@repeat_every(seconds=60)
+def sync_mining_to_db():
     db = SessionLocal()
     try:
         for user_id, sessions in manager.mining_progress.items():
-            user = db.query(User).filter(User.id==user_id).first()
+            user = db.query(User).filter(User.id == user_id).first()
             if not user:
                 continue
+
             for session_id, mined_amount in sessions.items():
-                session = db.query(MiningSession).filter(MiningSession.id==session_id).first()
-                if session:
-                    increment = mined_amount - Decimal(session.mined_amount)
-                    if increment > 0:
-                        session.mined_amount = float(mined_amount)
-                        session.last_processed = datetime.now(timezone.utc)
-                        if session.crypto_type=="bitcoin":
-                            user.bitcoin_balance += float(increment)
-                        else:
-                            user.ethereum_balance += float(increment)
+                session = db.query(MiningSession).filter(MiningSession.id == session_id).first()
+                if not session:
+                    continue
+
+                # Only commit if mined_amount has increased
+                increment = mined_amount - Decimal(session.mined_amount)
+                if increment <= 0:
+                    continue
+
+                # Update session and user balances
+                session.mined_amount = float(mined_amount)
+                session.last_processed = datetime.now(timezone.utc)
+                if session.crypto_type == "bitcoin":
+                    user.bitcoin_balance += float(increment)
+                else:
+                    user.ethereum_balance += float(increment)
+
         db.commit()
     except Exception as e:
         db.rollback()
         print(f"❌ Error syncing mining to DB: {e}")
     finally:
         db.close()
+
 
 
 @app.get("/api/mining/live-progress")
