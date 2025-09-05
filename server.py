@@ -1239,20 +1239,36 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(security), db: Session = Depends(get_db)):
+# Reusable function to get user from token
+def get_current_user(token: str | None = None, db: Session = Depends(get_db)):
+    """
+    Retrieves the current user either from HTTP Authorization header (Depends(security))
+    or directly from a token string (for WebSocket).
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # If token is provided as string (WebSocket)
+    if isinstance(token, str):
+        jwt_token = token
+    else:
+        # Otherwise assume it's a FastAPI HTTPBearer token
+        jwt_token = token.credentials if token else None
+
+    if not jwt_token:
+        raise credentials_exception
+
     try:
-        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    
+
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
@@ -2350,10 +2366,8 @@ async def confirm_deposit(
 
 # --- WebSocket Route (optimized) ---
 
-
 @app.websocket("/ws/mining/live-progress")
 async def websocket_mining_progress(websocket: WebSocket):
-    # Accept the connection first
     await websocket.accept()
 
     # Extract token from query params
@@ -2362,10 +2376,11 @@ async def websocket_mining_progress(websocket: WebSocket):
         await websocket.close(code=1008, reason="Missing auth token")
         return
 
-    # Decode/validate token to get user
+    # Decode/validate token to get user using reusable function
+    db = next(get_db())
     try:
-        user: User = await decode_jwt_token(token)  # returns your User object
-    except Exception as e:
+        user: User = get_current_user(token, db)
+    except HTTPException:
         await websocket.close(code=1008, reason="Invalid token")
         return
 
@@ -2378,7 +2393,6 @@ async def websocket_mining_progress(websocket: WebSocket):
             progress_data = []
 
             if sessions_progress:
-                db = next(get_db())  # one DB session per tick
                 session_ids = list(sessions_progress.keys())
                 db_sessions = db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
                 db_sessions_map = {s.id: s for s in db_sessions}
@@ -2394,7 +2408,6 @@ async def websocket_mining_progress(websocket: WebSocket):
                         (datetime.now(timezone.utc) - session.created_at.replace(tzinfo=timezone.utc)).total_seconds()
                     )
 
-                    # Live balance calculation
                     user_balance = float(user.bitcoin_balance if session.crypto_type == "bitcoin" else user.ethereum_balance)
                     live_balance = user_balance + float(current_mined - Decimal(session.mined_amount))
 
@@ -2408,7 +2421,6 @@ async def websocket_mining_progress(websocket: WebSocket):
                         "progress_percentage": float((current_mined / (deposited_amount * mining_rate)) * 100) if mining_rate > 0 else 0,
                         "elapsed_hours": float(elapsed_seconds / Decimal(3600)),
                     })
-                db.close()
 
             await manager.send_personal_message(user.id, {"active_sessions": progress_data})
             await asyncio.sleep(1)
@@ -2417,6 +2429,8 @@ async def websocket_mining_progress(websocket: WebSocket):
         print(f"WebSocket closed for user {user.id}: {e}")
     finally:
         manager.disconnect(user.id)
+        db.close()
+
 
 # --- Background task to persist mined amounts ---
 
