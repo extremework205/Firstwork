@@ -834,19 +834,30 @@ class ConnectionManager:
         self.mining_progress: dict[int, dict[int, Decimal]] = {}  # user_id -> {session_id: mined_amount}
 
     async def connect(self, user_id: int, websocket: WebSocket):
-        await websocket.accept()
+        """
+        Register an accepted websocket connection. Do NOT call websocket.accept() here.
+        Accept should happen in the route.
+        """
         self.active_connections[user_id] = websocket
         if user_id not in self.mining_progress:
             self.mining_progress[user_id] = {}
 
-    def disconnect(self, user_id: int):
+    async def disconnect(self, user_id: int):
+        """
+        Async disconnect. Removes the connection but keeps mining_progress for DB sync.
+        """
         self.active_connections.pop(user_id, None)
-        # keep mining_progress in memory for DB sync
 
     async def send_personal_message(self, user_id: int, message: dict):
+        """
+        Send a message to a single user if they are connected.
+        """
         websocket = self.active_connections.get(user_id)
         if websocket:
-            await websocket.send_json(message)
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                print(f"Error sending WS message to user {user_id}: {e}")
 
 
 # Instantiate the manager
@@ -2331,8 +2342,7 @@ async def confirm_deposit(
 
 @app.websocket("/ws/mining/live-progress")
 async def websocket_mining_progress(websocket: WebSocket):
-    # Accept immediately
-    await websocket.accept()
+    await websocket.accept()  # Accept immediately
 
     # Extract token from query params
     token = websocket.query_params.get("token")
@@ -2340,12 +2350,13 @@ async def websocket_mining_progress(websocket: WebSocket):
         await websocket.close(code=1008, reason="Missing auth token")
         return
 
-    # Decode/validate token using your WS helper in a thread
+    db = await asyncio.to_thread(lambda: next(get_db()))
     try:
-        db = next(get_db())
+        # Get user safely in thread
         user: User = await asyncio.to_thread(get_user_from_ws_token, token, db)
     except HTTPException:
         await websocket.close(code=1008, reason="Invalid token")
+        db.close()
         return
 
     # Connect user to manager
@@ -2359,7 +2370,7 @@ async def websocket_mining_progress(websocket: WebSocket):
             if sessions_progress:
                 session_ids = list(sessions_progress.keys())
 
-                # DB queries in thread to avoid blocking
+                # Fetch sessions from DB in thread
                 db_sessions = await asyncio.to_thread(
                     lambda: db.query(MiningSession).filter(MiningSession.id.in_(session_ids)).all()
                 )
@@ -2396,8 +2407,9 @@ async def websocket_mining_progress(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket closed for user {user.id}: {e}")
     finally:
-        manager.disconnect(user.id)
+        await manager.disconnect(user.id)  # Ensure async safe disconnect
         db.close()
+        await websocket.close()  # Close WS properly
 
 
 # --- Background task to persist mined amounts ---
