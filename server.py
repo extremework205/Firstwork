@@ -17,9 +17,10 @@ from collections import defaultdict
 import time
 import logging
 import random
+import asyncio
 
 # FastAPI and related imports
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Query, Form, UploadFile, File
+from fastapi import FastAPI, Depends, WebSocket, HTTPException, status, Request, Query, Form, UploadFile, File
 from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -800,6 +801,41 @@ class UserResponse(UserBase):
     class Config:
         from_attributes = True
 
+
+# --- WebSocket Manager for multiple users ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[int, WebSocket] = {}  # user_id -> websocket
+        self.mining_progress: dict[int, dict[int, Decimal]] = {}  # user_id -> {session_id: mined_amount}
+
+    async def connect(self, user_id: int, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[user_id] = websocket
+        if user_id not in self.mining_progress:
+            self.mining_progress[user_id] = {}
+
+    def disconnect(self, user_id: int):
+        self.active_connections.pop(user_id, None)
+        self.mining_progress.pop(user_id, None)
+
+    async def send_personal_message(self, user_id: int, message: dict):
+        websocket = self.active_connections.get(user_id)
+        if websocket:
+            await websocket.send_json(message)
+
+
+# Instantiate the manager
+manager = ConnectionManager()
+
+
+# --- DB dependency ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+        
 # Authentication Schemas
 class UserLogin(BaseModel):
     email: str
@@ -2321,6 +2357,94 @@ async def confirm_deposit(
 # =============================================================================
 
 
+# --- WebSocket route ---
+@app.websocket("/ws/mining/live-progress")
+async def websocket_mining_progress(websocket: WebSocket, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    await manager.connect(user.id, websocket)
+    
+    try:
+        while True:
+            active_sessions = db.query(MiningSession).filter(
+                MiningSession.user_id == user.id,
+                MiningSession.is_active == True
+            ).all()
+
+            now = datetime.now(timezone.utc)
+            progress_data = []
+
+            for session in active_sessions:
+                if not session.created_at:
+                    continue
+
+                created_at = session.created_at.replace(tzinfo=timezone.utc) if session.created_at.tzinfo is None else session.created_at
+
+                elapsed_seconds = Decimal((now - created_at).total_seconds())
+                deposited_amount = Decimal(session.deposited_amount)
+                mining_rate = Decimal(session.mining_rate) / Decimal(100)
+                mining_per_second = deposited_amount * mining_rate / Decimal(24*3600)
+
+                # --- Get in-memory mined amount ---
+                current_mined = manager.mining_progress[user.id].get(session.id, Decimal(session.mined_amount))
+
+                # Increment for this tick
+                current_mined += mining_per_second
+                current_mined = min(current_mined, deposited_amount * mining_rate)
+
+                # Update in-memory
+                manager.mining_progress[user.id][session.id] = current_mined
+
+                # Live balance calculation (without DB commit)
+                live_balance = float(user.bitcoin_balance if session.crypto_type=="bitcoin" else user.ethereum_balance) + float(current_mined - Decimal(session.mined_amount))
+
+                progress_data.append({
+                    "session_id": session.id,
+                    "crypto_type": session.crypto_type,
+                    "deposited_amount": float(deposited_amount),
+                    "mining_rate": float(mining_rate*100),
+                    "current_mined": float(current_mined),
+                    "balance": live_balance,
+                    "progress_percentage": float((current_mined / (deposited_amount * mining_rate))*100) if mining_rate>0 else 0,
+                    "elapsed_hours": float(elapsed_seconds/Decimal(3600))
+                })
+
+            # Send live progress
+            await manager.send_personal_message(user.id, {"active_sessions": progress_data})
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        print(f"WebSocket closed for user {user.id}: {e}")
+    finally:
+        manager.disconnect(user.id)
+
+# --- Background task to persist mined amounts ---
+@app.on_event("startup")
+@repeat_every(seconds=60)  # Save to DB every minute
+async def sync_mining_to_db():
+    db = SessionLocal()
+    try:
+        for user_id, sessions in manager.mining_progress.items():
+            user = db.query(User).filter(User.id==user_id).first()
+            if not user:
+                continue
+            for session_id, mined_amount in sessions.items():
+                session = db.query(MiningSession).filter(MiningSession.id==session_id).first()
+                if session:
+                    increment = mined_amount - Decimal(session.mined_amount)
+                    if increment > 0:
+                        session.mined_amount = float(mined_amount)
+                        session.last_processed = datetime.now(timezone.utc)
+                        if session.crypto_type=="bitcoin":
+                            user.bitcoin_balance += float(increment)
+                        else:
+                            user.ethereum_balance += float(increment)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error syncing mining to DB: {e}")
+    finally:
+        db.close()
+
+
 @app.get("/api/mining/live-progress")
 def get_live_mining_progress(
     current_user: User = Depends(get_current_user),
@@ -2403,10 +2527,11 @@ def pause_mining_session(
 # BACKGROUND TASKS
 # =============================================================================
 
+
 @app.on_event("startup")
 @repeat_every(seconds=60)  # Run every minute
 def process_mining_sessions():
-    """Background task to process mining sessions every minute"""
+    """Background task to process active mining sessions every minute"""
     db = SessionLocal()
     try:
         active_sessions = db.query(MiningSession).filter(
@@ -2414,55 +2539,67 @@ def process_mining_sessions():
         ).all()
         
         for session in active_sessions:
-            elapsed_seconds = (datetime.utcnow() - session.created_at).total_seconds()
+            if not session.created_at:
+                continue
+
+            # Ensure UTC-aware datetime
+            created_at = session.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
             
-            # Calculate total amount that should be mined by now
-            mining_per_second = (session.deposited_amount * (session.mining_rate / 100)) / (24 * 3600)
+            elapsed_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+            
+            deposited_amount = Decimal(session.deposited_amount)
+            mining_rate = Decimal(session.mining_rate) / Decimal(100)
+            
+            mining_per_second = deposited_amount * mining_rate / Decimal(24 * 3600)
             total_should_be_mined = min(
-                mining_per_second * elapsed_seconds,
-                session.deposited_amount * (session.mining_rate / 100)
+                mining_per_second * Decimal(elapsed_seconds),
+                deposited_amount * mining_rate
             )
             
-            # Calculate increment since last update
-            mining_increment = total_should_be_mined - session.mined_amount
+            mining_increment = total_should_be_mined - Decimal(session.mined_amount)
             
             if mining_increment > 0:
                 # Update session
-                session.mined_amount = total_should_be_mined
-                session.last_processed = datetime.utcnow()
+                session.mined_amount = float(total_should_be_mined)
+                session.last_processed = datetime.now(timezone.utc)
                 
                 # Update user balance
                 user = db.query(User).filter(User.id == session.user_id).first()
-                if session.crypto_type == "bitcoin":
-                    user.bitcoin_balance += mining_increment
-                else:
-                    user.ethereum_balance += mining_increment
-                
-                # Log transaction
-                log_transaction(
-                    db=db,
-                    user_id=user.id,
-                    transaction_type="mining_reward",
-                    crypto_type=session.crypto_type,
-                    amount=mining_increment,
-                    description=f"Mining reward - {session.crypto_type} mined at {session.mining_rate}% rate",
-                    reference_id=str(session.id)
-                )
+                if user:
+                    if session.crypto_type == "bitcoin":
+                        user.bitcoin_balance += float(mining_increment)
+                    else:
+                        user.ethereum_balance += float(mining_increment)
+                    
+                    # Log transaction
+                    log_transaction(
+                        db=db,
+                        user_id=user.id,
+                        transaction_type="mining_reward",
+                        crypto_type=session.crypto_type,
+                        amount=mining_increment,
+                        description=f"Mining reward - {session.crypto_type} mined at {session.mining_rate}% rate",
+                        reference_id=str(session.id)
+                    )
         
         db.commit()
         
     except Exception as e:
-        print(f"Error processing mining sessions: {e}")
+        print(f"❌ Error processing mining sessions: {e}")
         db.rollback()
     finally:
         db.close()
 
+
 @app.on_event("startup")
 @repeat_every(seconds=30)  # Process email queue every 30 seconds
 def process_email_queue():
-    """Background task to process email queue"""
+    """Background task to process pending emails."""
     db = SessionLocal()
     try:
+        # Fetch up to 10 pending emails
         pending_emails = db.query(EmailNotification).filter(
             EmailNotification.status == "pending"
         ).limit(10).all()
@@ -2474,29 +2611,29 @@ def process_email_queue():
                     subject=email.subject,
                     html_content=email.html_content
                 )
-                
+
                 if success:
                     email.status = "sent"
                     email.sent_at = datetime.utcnow()
                 else:
-                    email.status = "failed"
                     email.attempts += 1
-                    
-                    # Retry failed emails up to 3 times
                     if email.attempts < 3:
                         email.status = "pending"
                         email.scheduled_for = datetime.utcnow() + timedelta(minutes=5)
-                
+                    else:
+                        email.status = "failed"
+
             except Exception as e:
-                email.status = "failed"
                 email.attempts += 1
-                print(f"Failed to send email {email.id}: {e}")
+                email.status = "failed"
+                print(f"❌ Failed to send email ID {email.id}: {e}")
         
         db.commit()
-        
+    
     except Exception as e:
-        print(f"Error processing email queue: {e}")
+        print(f"❌ Error processing email queue: {e}")
         db.rollback()
+    
     finally:
         db.close()
 
@@ -2561,18 +2698,21 @@ def process_email_queue():
     uvicorn.run(app, host="0.0.0.0", port=8000)"""
 
 
+
 @app.on_event("startup")
 def setup_database_and_admin():
-    # ✅ Create database tables
+    """Initialize database tables and ensure a single admin user exists."""
+    # ✅ Create all tables
     Base.metadata.create_all(bind=engine)
 
-    db = SessionLocal()
+    db: Session = SessionLocal()
     try:
+        # Environment variables
         admin_email = os.getenv("ADMIN_EMAIL")
         admin_password = os.getenv("ADMIN_PASSWORD")
         admin_pin = os.getenv("ADMIN_PIN")
 
-        if not admin_email or not admin_password or not admin_pin:
+        if not all([admin_email, admin_password, admin_pin]):
             print("⚠️ Missing ADMIN credentials in environment, skipping admin creation.")
             return
 
@@ -2580,7 +2720,7 @@ def setup_database_and_admin():
         all_admins = db.query(User).filter(User.is_admin == True).all()
 
         if all_admins:
-            # Keep only one admin: update the first admin with env vars
+            # Update the first admin with environment credentials
             admin_user = all_admins[0]
             admin_user.email = admin_email
             admin_user.password_hash = pwd_context.hash(admin_password)
@@ -2589,15 +2729,16 @@ def setup_database_and_admin():
             admin_user.user_id = admin_user.user_id or generate_user_id()
             admin_user.referral_code = admin_user.referral_code or generate_referral_code()
             db.add(admin_user)
-            db.commit()
-            print(f"✅ Admin user updated: {admin_email}")
 
             # Delete any extra admins
             for extra_admin in all_admins[1:]:
                 db.delete(extra_admin)
+
             db.commit()
+            print(f"✅ Admin user updated: {admin_email}")
             if len(all_admins) > 1:
                 print(f"⚠️ Deleted {len(all_admins)-1} extra admin(s)")
+
         else:
             # No admin exists, create one
             admin_user = User(
@@ -2614,17 +2755,17 @@ def setup_database_and_admin():
             db.commit()
             print(f"✅ Admin user created: {admin_email}")
 
-        # 🔹 Check if default admin settings exist
+        # 🔹 Check and create default admin settings
         existing_settings = db.query(AdminSettings).first()
         if not existing_settings:
             default_settings = AdminSettings(
-                bitcoin_rate_usd=50000.0,
-                ethereum_rate_usd=3000.0,
-                global_mining_rate=0.7,
+                bitcoin_rate_usd=Decimal("50000.0"),
+                ethereum_rate_usd=Decimal("3000.0"),
+                global_mining_rate=Decimal("0.7"),
                 referral_reward_enabled=True,
                 referral_reward_type="bitcoin",
-                referral_reward_amount=0.001,
-                referrer_reward_amount=0.001
+                referral_reward_amount=Decimal("0.001"),
+                referrer_reward_amount=Decimal("0.001")
             )
             db.add(default_settings)
             db.commit()
@@ -2637,7 +2778,6 @@ def setup_database_and_admin():
         print(f"❌ Error creating/updating admin user/settings: {e}")
     finally:
         db.close()
-
 
 @app.get("/api/analytics/dashboard", response_model=UserAnalyticsResponse)
 async def get_user_analytics_dashboard(
@@ -2660,7 +2800,7 @@ async def get_user_analytics_dashboard(
         "asset_allocation": {
             "bitcoin_percentage": (usd_values["bitcoin_balance_usd"] / usd_values["total_balance_usd"] * 100)
             if usd_values["total_balance_usd"] > 0 else 0,
-            "ethereum_percentage": (usd_values["ethereum_balance_usd"] / usd_values["total_balance_usd"] * 100)
+            "ethereum_percentage": (usd_values["ethereum_value_usd"] / usd_values["total_balance_usd"] * 100)
             if usd_values["total_balance_usd"] > 0 else 0
         }
     }
@@ -2673,17 +2813,19 @@ async def get_user_analytics_dashboard(
         MiningSession.is_active == True
     ).all()
 
-    total_mining_power = sum(session.deposited_amount for session in active_sessions)
-    avg_mining_rate = sum(session.mining_rate for session in active_sessions) / len(active_sessions) if active_sessions else 0
+    total_mining_power = sum(Decimal(session.deposited_amount) for session in active_sessions)
+    avg_mining_rate = (sum(Decimal(session.mining_rate) for session in active_sessions) / len(active_sessions)) if active_sessions else Decimal(0)
+
+    daily_estimated_earnings = sum(
+        (Decimal(session.deposited_amount) * (Decimal(session.mining_rate) / Decimal(100))) / Decimal(24)
+        for session in active_sessions
+    )
 
     mining_performance = {
         "active_sessions": len(active_sessions),
-        "total_mining_power": total_mining_power,
-        "average_mining_rate": avg_mining_rate,
-        "daily_estimated_earnings": sum(
-            (session.deposited_amount * (session.mining_rate / 100)) / 24
-            for session in active_sessions
-        )
+        "total_mining_power": float(total_mining_power),
+        "average_mining_rate": float(avg_mining_rate),
+        "daily_estimated_earnings": float(daily_estimated_earnings)
     }
 
     # ---------------------
@@ -2698,13 +2840,13 @@ async def get_user_analytics_dashboard(
         TransactionHistory.created_at >= thirty_days_ago
     ).all()
 
-    mining_earnings = sum(t.amount for t in earnings_transactions if t.transaction_type == "mining_reward")
-    referral_earnings = sum(t.amount for t in earnings_transactions if t.transaction_type == "referral_reward")
+    mining_earnings = sum(Decimal(t.amount) for t in earnings_transactions if t.transaction_type == "mining_reward")
+    referral_earnings = sum(Decimal(t.amount) for t in earnings_transactions if t.transaction_type == "referral_reward")
 
     earnings_history = {
-        "total_earnings": mining_earnings + referral_earnings,
-        "mining_earnings": mining_earnings,
-        "referral_earnings": referral_earnings,
+        "total_earnings": float(mining_earnings + referral_earnings),
+        "mining_earnings": float(mining_earnings),
+        "referral_earnings": float(referral_earnings),
         "daily_breakdown": []
     }
 
@@ -2723,7 +2865,7 @@ async def get_user_analytics_dashboard(
 
         earnings_history["daily_breakdown"].append({
             "date": day_start.strftime("%Y-%m-%d"),
-            "earnings": day_earnings
+            "earnings": float(day_earnings)
         })
 
     # ---------------------
@@ -2746,7 +2888,7 @@ async def get_user_analytics_dashboard(
 
         # Volume by crypto
         if transaction.crypto_type:
-            transaction_analytics["volume_by_crypto"][transaction.crypto_type] += transaction.amount
+            transaction_analytics["volume_by_crypto"][transaction.crypto_type] += float(transaction.amount)
 
     # ---------------------
     # Referral Performance
@@ -2758,7 +2900,7 @@ async def get_user_analytics_dashboard(
 
     referral_performance = {
         "total_referrals": len(referrals),
-        "total_rewards": sum(r.reward_amount for r in referral_rewards),
+        "total_rewards": float(sum(Decimal(r.reward_amount) for r in referral_rewards)),
         "active_referrals": len([r for r in referrals if r.status == "approved"]),
         "referral_code": current_user.referral_code
     }
@@ -2772,15 +2914,14 @@ async def get_user_analytics_dashboard(
 
     first_date = first_transaction.created_at if first_transaction else current_user.created_at
     if first_date.tzinfo is None:
-        # Make it UTC-aware if somehow naive
         first_date = first_date.replace(tzinfo=timezone.utc)
 
     days_active = (now - first_date).days
 
     growth_metrics = {
         "days_active": days_active,
-        "average_daily_earnings": (mining_earnings + referral_earnings) / max(days_active, 1),
-        "growth_rate": 0,  # Placeholder for future calculation
+        "average_daily_earnings": float((mining_earnings + referral_earnings) / max(days_active, 1)),
+        "growth_rate": 0,
         "milestones": {
             "first_deposit": bool(db.query(CryptoDeposit).filter(CryptoDeposit.user_id == current_user.id).first()),
             "first_referral": len(referrals) > 0,
@@ -2797,6 +2938,7 @@ async def get_user_analytics_dashboard(
         growth_metrics=growth_metrics
     )
 
+
 @app.get("/api/analytics/mining-performance", response_model=MiningPerformanceData)
 async def get_mining_performance(
     days: int = 30,
@@ -2804,74 +2946,85 @@ async def get_mining_performance(
     db: Session = Depends(get_db)
 ):
     """Get detailed mining performance analytics"""
-    start_date = datetime.utcnow() - timedelta(days=days)
-    
+    now = datetime.now(timezone.utc)
+
     # Daily earnings
     daily_earnings = []
     for i in range(days):
-        day = datetime.utcnow() - timedelta(days=i)
+        day = now - timedelta(days=i)
         day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
-        
+
         day_mining_earnings = db.query(func.sum(TransactionHistory.amount)).filter(
             TransactionHistory.user_id == current_user.id,
             TransactionHistory.transaction_type == "mining_reward",
             TransactionHistory.created_at >= day_start,
             TransactionHistory.created_at < day_end
-        ).scalar() or 0
-        
+        ).scalar() or Decimal(0)
+
+        day_mining_earnings = Decimal(day_mining_earnings)
+
         daily_earnings.append({
             "date": day_start.strftime("%Y-%m-%d"),
-            "bitcoin_earned": day_mining_earnings if day_mining_earnings else 0,
+            "bitcoin_earned": float(day_mining_earnings),
             "ethereum_earned": 0,  # Could separate by crypto type
-            "total_earned": day_mining_earnings
+            "total_earned": float(day_mining_earnings)
         })
-    
+
     # Weekly summary
-    week_start = datetime.utcnow() - timedelta(days=7)
-    weekly_earnings = db.query(func.sum(TransactionHistory.amount)).filter(
-        TransactionHistory.user_id == current_user.id,
-        TransactionHistory.transaction_type == "mining_reward",
-        TransactionHistory.created_at >= week_start
-    ).scalar() or 0
-    
+    week_start = now - timedelta(days=7)
+    weekly_earnings = Decimal(
+        db.query(func.sum(TransactionHistory.amount)).filter(
+            TransactionHistory.user_id == current_user.id,
+            TransactionHistory.transaction_type == "mining_reward",
+            TransactionHistory.created_at >= week_start
+        ).scalar() or 0
+    )
+
     # Monthly trends
-    month_start = datetime.utcnow() - timedelta(days=30)
-    monthly_earnings = db.query(func.sum(TransactionHistory.amount)).filter(
-        TransactionHistory.user_id == current_user.id,
-        TransactionHistory.transaction_type == "mining_reward",
-        TransactionHistory.created_at >= month_start
-    ).scalar() or 0
-    
+    month_start = now - timedelta(days=30)
+    monthly_earnings = Decimal(
+        db.query(func.sum(TransactionHistory.amount)).filter(
+            TransactionHistory.user_id == current_user.id,
+            TransactionHistory.transaction_type == "mining_reward",
+            TransactionHistory.created_at >= month_start
+        ).scalar() or 0
+    )
+
     # Efficiency metrics
     active_sessions = db.query(MiningSession).filter(
         MiningSession.user_id == current_user.id,
         MiningSession.is_active == True
     ).all()
-    
-    total_deposited = sum(session.deposited_amount for session in active_sessions)
-    total_mined = sum(session.mined_amount for session in active_sessions)
-    efficiency = (total_mined / total_deposited * 100) if total_deposited > 0 else 0
-    
+
+    total_deposited = sum(Decimal(session.deposited_amount) for session in active_sessions)
+    total_mined = sum(Decimal(session.mined_amount) for session in active_sessions)
+    efficiency = float((total_mined / total_deposited * Decimal(100)) if total_deposited > 0 else Decimal(0))
+
     return MiningPerformanceData(
         daily_earnings=daily_earnings,
         weekly_summary={
-            "total_earned": weekly_earnings,
-            "average_daily": weekly_earnings / 7,
+            "total_earned": float(weekly_earnings),
+            "average_daily": float(weekly_earnings / Decimal(7)),
             "best_day": max(daily_earnings[-7:], key=lambda x: x["total_earned"])["date"] if daily_earnings else None
         },
         monthly_trends={
-            "total_earned": monthly_earnings,
-            "trend": "up",  # Could calculate actual trend
+            "total_earned": float(monthly_earnings),
+            "trend": "up",  # Placeholder; could calculate actual trend
             "growth_rate": 0
         },
         efficiency_metrics={
             "mining_efficiency": efficiency,
             "active_sessions": len(active_sessions),
-            "total_mining_power": total_deposited
+            "total_mining_power": float(total_deposited)
         }
     )
 
+
+
+# ---------------------
+# Portfolio Analytics
+# ---------------------
 @app.get("/api/analytics/portfolio", response_model=PortfolioAnalytics)
 async def get_portfolio_analytics(
     current_user: User = Depends(get_current_user),
@@ -2881,42 +3034,48 @@ async def get_portfolio_analytics(
     admin_settings = get_admin_settings(db)
     usd_values = calculate_usd_values(current_user, admin_settings)
     
-    # Current value
+    # ---------------------
+    # Current Value
+    # ---------------------
     current_value = {
-        "total_usd": usd_values["total_balance_usd"],
-        "bitcoin_amount": current_user.bitcoin_balance,
-        "ethereum_amount": current_user.ethereum_balance,
-        "bitcoin_usd": usd_values["bitcoin_balance_usd"],
-        "ethereum_usd": usd_values["ethereum_balance_usd"]
+        "total_usd": float(Decimal(usd_values["total_balance_usd"])),
+        "bitcoin_amount": float(Decimal(current_user.bitcoin_balance)),
+        "ethereum_amount": float(Decimal(current_user.ethereum_balance)),
+        "bitcoin_usd": float(Decimal(usd_values["bitcoin_balance_usd"])),
+        "ethereum_usd": float(Decimal(usd_values["ethereum_balance_usd"]))
     }
     
-    # Historical performance (last 30 days)
+    # ---------------------
+    # Historical Performance (last 30 days)
+    # ---------------------
     historical_performance = []
     for i in range(30):
-        day = datetime.utcnow() - timedelta(days=i)
-        # This would ideally track daily balance snapshots
-        # For now, we'll simulate based on transaction history
+        day = datetime.now(timezone.utc) - timedelta(days=i)
         historical_performance.append({
             "date": day.strftime("%Y-%m-%d"),
-            "total_value": float(usd_values["total_balance_usd"]),  # Simplified
-            "bitcoin_value": float(usd_values["bitcoin_balance_usd"]),
-            "ethereum_value": float(usd_values["ethereum_balance_usd"])
+            "total_value": float(Decimal(usd_values["total_balance_usd"])),
+            "bitcoin_value": float(Decimal(usd_values["bitcoin_balance_usd"])),
+            "ethereum_value": float(Decimal(usd_values["ethereum_balance_usd"]))
         })
     
-    # Asset allocation
-    total_value = usd_values["total_balance_usd"]
+    # ---------------------
+    # Asset Allocation
+    # ---------------------
+    total_value = Decimal(usd_values["total_balance_usd"])
     asset_allocation = {
         "bitcoin": {
-            "percentage": (usd_values["bitcoin_balance_usd"] / total_value * 100) if total_value > 0 else 0,
-            "value": usd_values["bitcoin_balance_usd"]
+            "percentage": float(Decimal(usd_values["bitcoin_balance_usd"]) / total_value * Decimal(100)) if total_value > 0 else 0,
+            "value": float(Decimal(usd_values["bitcoin_balance_usd"]))
         },
         "ethereum": {
-            "percentage": (usd_values["ethereum_balance_usd"] / total_value * 100) if total_value > 0 else 0,
-            "value": usd_values["ethereum_balance_usd"]
+            "percentage": float(Decimal(usd_values["ethereum_balance_usd"]) / total_value * Decimal(100)) if total_value > 0 else 0,
+            "value": float(Decimal(usd_values["ethereum_balance_usd"]))
         }
     }
     
-    # Growth rate calculation
+    # ---------------------
+    # Growth Rate Placeholder
+    # ---------------------
     growth_rate = {
         "daily": 0,  # Would calculate based on historical data
         "weekly": 0,
@@ -2931,6 +3090,9 @@ async def get_portfolio_analytics(
         growth_rate=growth_rate
     )
 
+# ---------------------
+# Admin Action Logging
+# ---------------------
 def log_admin_action(
     db: Session,
     admin_id: int,
@@ -2958,6 +3120,9 @@ def log_admin_action(
     db.add(audit_log)
     db.commit()
 
+# ---------------------
+# Transaction Logging
+# ---------------------
 def log_transaction(
     db: Session,
     user_id: int,
@@ -2968,6 +3133,7 @@ def log_transaction(
     reference_id: Optional[str] = None
 ):
     """Log transaction for history tracking"""
+    amount = Decimal(amount)  # Ensure Decimal
     transaction = TransactionHistory(
         user_id=user_id,
         transaction_type=transaction_type,
