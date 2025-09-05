@@ -2475,7 +2475,6 @@ def get_live_mining_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get real-time mining progress for all active sessions"""
     active_sessions = db.query(MiningSession).filter(
         MiningSession.user_id == current_user.id,
         MiningSession.is_active == True
@@ -2556,7 +2555,6 @@ def pause_mining_session(
 """@app.on_event("startup")
 @repeat_every(seconds=60)  # Run every minute
 def process_mining_sessions():
-    """Background task to process active mining sessions every minute"""
     db = SessionLocal()
     try:
         active_sessions = db.query(MiningSession).filter(
