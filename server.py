@@ -583,8 +583,11 @@ def get_admin_settings(db: Session):
 
 def calculate_usd_values(user: User, admin_settings: AdminSettings):
     """Calculate USD values for user's crypto balances"""
-    bitcoin_balance_usd = user.bitcoin_balance * admin_settings.bitcoin_rate_usd
-    ethereum_balance_usd = user.ethereum_balance * admin_settings.ethereum_rate_usd
+    bitcoin_balance = user.bitcoin_balance or 0
+    ethereum_balance = user.ethereum_balance or 0
+
+    bitcoin_balance_usd = bitcoin_balance * admin_settings.bitcoin_rate_usd
+    ethereum_balance_usd = ethereum_balance * admin_settings.ethereum_rate_usd
     total_balance_usd = bitcoin_balance_usd + ethereum_balance_usd
     
     return {
