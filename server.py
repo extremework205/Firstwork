@@ -3423,6 +3423,59 @@ async def upload_qr_code(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/user/profile", response_model=UserResponse)
+async def get_user_profile(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns full user details including BTC/ETH balances and their USD equivalents.
+    """
+    # ---------------------
+    # Calculate USD equivalents
+    # ---------------------
+    admin_settings = get_admin_settings(db)
+    usd_values = calculate_usd_values(current_user, admin_settings) or {}
+
+    bitcoin_balance_usd = usd_values.get("bitcoin_balance_usd", 0)
+    ethereum_balance_usd = usd_values.get("ethereum_balance_usd", 0)
+    total_balance_usd = usd_values.get("total_balance_usd", 0)
+
+    # ---------------------
+    # Count referred users
+    # ---------------------
+    referred_count = db.query(User).filter(User.referred_by_code == current_user.referral_code).count()
+
+    return UserResponse(
+        id=current_user.id,
+        user_id=current_user.user_id,
+        name=current_user.name,
+        status=current_user.status,
+        is_admin=current_user.is_admin,
+        is_agent=current_user.is_agent,
+        is_flagged=current_user.is_flagged,
+        usd_balance=total_balance_usd,  # Total USD value of portfolio
+        bitcoin_balance=current_user.bitcoin_balance,
+        ethereum_balance=current_user.ethereum_balance,
+        bitcoin_balance_usd=bitcoin_balance_usd,
+        ethereum_balance_usd=ethereum_balance_usd,
+        total_balance_usd=total_balance_usd,
+        bitcoin_wallet=current_user.bitcoin_wallet,
+        ethereum_wallet=current_user.ethereum_wallet,
+        personal_mining_rate=current_user.personal_mining_rate,
+        referral_code=current_user.referral_code,
+        email_verified=current_user.email_verified,
+        birthday_day=current_user.birthday_day,
+        birthday_month=current_user.birthday_month,
+        birthday_year=current_user.birthday_year,
+        gender=current_user.gender,
+        user_country_code=current_user.user_country_code,
+        zip_code=current_user.zip_code,
+        created_at=current_user.created_at,
+        referred_users_count=referred_count
+    )
+
+
 @app.get("/health")
 @app.head("/health")
 def health_check():
