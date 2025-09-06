@@ -2200,6 +2200,35 @@ async def submit_deposit(
     
     return {"message": "Deposit submitted for admin review"}
 
+
+@app.get("/api/user/deposits")
+def get_user_deposits(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch all deposits for the currently logged-in user.
+    Returns deposit details including crypto type, amounts, status, evidence, and creation date.
+    """
+    deposits = db.query(CryptoDeposit).filter(
+        CryptoDeposit.user_id == current_user.id
+    ).order_by(CryptoDeposit.created_at.desc()).all()
+
+    result = []
+    for deposit in deposits:
+        result.append({
+            "id": deposit.id,
+            "crypto_type": deposit.crypto_type,
+            "amount": deposit.amount,
+            "usd_amount": deposit.usd_amount,
+            "status": deposit.status,
+            "transaction_hash": deposit.transaction_hash,
+            "evidence_url": deposit.evidence_url,
+            "created_at": deposit.created_at.isoformat()
+        })
+
+    return result
+
 # =============================================================================
 # ADMIN DEPOSIT MANAGEMENT ENDPOINTS
 # =============================================================================
