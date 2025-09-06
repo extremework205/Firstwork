@@ -3450,11 +3450,12 @@ async def get_user_profile(
         id=current_user.id,
         user_id=current_user.user_id,
         name=current_user.name,
+        email=current_user.email or "",  # ✅ must include email
         status=current_user.status,
         is_admin=current_user.is_admin,
         is_agent=current_user.is_agent,
         is_flagged=current_user.is_flagged,
-        usd_balance=total_balance_usd,  # Total USD value of portfolio
+        usd_balance=total_balance_usd,
         bitcoin_balance=current_user.bitcoin_balance,
         ethereum_balance=current_user.ethereum_balance,
         bitcoin_balance_usd=bitcoin_balance_usd,
