@@ -1928,13 +1928,15 @@ def get_deposit_info(crypto_type: CryptoType, db: Session = Depends(get_db)):
     """Get deposit information including QR code and wallet address"""
     settings = get_or_create_admin_settings(db)
     
-    # Get wallet address from admin settings
+    # Get wallet address & QR from admin settings
     if crypto_type == "bitcoin":
         wallet_address = settings.bitcoin_wallet_address
         qr_code_url = settings.bitcoin_deposit_qr
+        usd_rate = settings.bitcoin_rate_usd
     else:  # ethereum
         wallet_address = settings.ethereum_wallet_address
         qr_code_url = settings.ethereum_deposit_qr
+        usd_rate = settings.ethereum_rate_usd
     
     if not wallet_address:
         raise HTTPException(status_code=404, detail=f"No wallet address configured for {crypto_type}")
@@ -1942,26 +1944,26 @@ def get_deposit_info(crypto_type: CryptoType, db: Session = Depends(get_db)):
     return {
         "crypto_type": crypto_type,
         "qr_code_url": qr_code_url,
-        "wallet_address": wallet_address
+        "wallet_address": wallet_address,
+        "usd_rate": usd_rate
     }
+
 
 def get_crypto_usd_rate(db: Session, crypto_type: str) -> Decimal:
     """Get current USD rate for crypto from admin settings"""
+    settings = get_or_create_admin_settings(db)
+
     if crypto_type == "bitcoin":
-        rate_setting = db.query(AdminSettings).filter(AdminSettings.key == "bitcoin_usd_rate").first()
+        return Decimal(settings.bitcoin_rate_usd or "50000.00")
     else:
-        rate_setting = db.query(AdminSettings).filter(AdminSettings.key == "ethereum_usd_rate").first()
-    
-    if rate_setting:
-        return Decimal(rate_setting.value)
-    
-    # Default rates if not set by admin
-    return Decimal("50000.00") if crypto_type == "bitcoin" else Decimal("3000.00")
+        return Decimal(settings.ethereum_rate_usd or "3000.00")
+
 
 def convert_crypto_to_usd(crypto_amount: Decimal, crypto_type: str, db: Session) -> Decimal:
     """Convert crypto amount to USD"""
     rate = get_crypto_usd_rate(db, crypto_type)
     return crypto_amount * rate
+
 
 def convert_usd_to_crypto(usd_amount: Decimal, crypto_type: str, db: Session) -> Decimal:
     """Convert USD amount to crypto"""
@@ -1971,12 +1973,13 @@ def convert_usd_to_crypto(usd_amount: Decimal, crypto_type: str, db: Session) ->
 @app.get("/api/deposits/rates")
 def get_crypto_rates(db: Session = Depends(get_db)):
     """Get current crypto to USD conversion rates"""
-    bitcoin_rate = get_crypto_usd_rate(db, "bitcoin")
-    ethereum_rate = get_crypto_usd_rate(db, "ethereum")
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
     
     return {
-        "bitcoin_usd_rate": bitcoin_rate,
-        "ethereum_usd_rate": ethereum_rate
+        "bitcoin_usd_rate": settings.bitcoin_rate_usd,
+        "ethereum_usd_rate": settings.ethereum_rate_usd
     }
 
 @app.post("/api/deposits/convert")
