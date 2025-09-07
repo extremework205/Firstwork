@@ -3575,6 +3575,7 @@ async def get_user_profile(
         referred_users_count=referred_count
     )
 
+
 @app.get("/api/user/withdrawals", response_model=List[WithdrawalResponse])
 def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
@@ -3586,7 +3587,31 @@ def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Dep
         .order_by(Withdrawal.created_at.desc())
         .all()
     )
-    return withdrawals
+
+    admin_settings = db.query(AdminSettings).first()
+    if not admin_settings:
+        raise HTTPException(status_code=500, detail="Admin settings not configured")
+
+    response = []
+    for w in withdrawals:
+        # Calculate USD dynamically
+        rate = Decimal(admin_settings.bitcoin_rate_usd if w.crypto_type == "bitcoin" else admin_settings.ethereum_rate_usd)
+        usd_amount = float(Decimal(w.amount) * rate)
+
+        response.append(
+            WithdrawalResponse(
+                id=w.id,
+                crypto_type=w.crypto_type,
+                amount=float(w.amount),
+                usd_amount=usd_amount,
+                wallet_address=w.wallet_address,
+                status=w.status,
+                transaction_hash=w.transaction_hash,
+                created_at=w.created_at.isoformat(),  # convert datetime to string
+            )
+        )
+
+    return response
 
 
 @app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
