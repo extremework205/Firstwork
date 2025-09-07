@@ -2122,6 +2122,8 @@ async def upload_deposit_evidence(
     db: Session = Depends(get_db)
 ):
     """Upload deposit evidence (screenshot/proof)"""
+    
+    # Fetch the deposit
     deposit = db.query(CryptoDeposit).filter(
         CryptoDeposit.id == deposit_id,
         CryptoDeposit.user_id == current_user.id
@@ -2138,37 +2140,37 @@ async def upload_deposit_evidence(
     if evidence_file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only images (JPEG, PNG, GIF) and PDF files are allowed")
     
-    # Upload to cloud storage instead of local folder
+    # Upload file to cloud storage
     file_extension = evidence_file.filename.split(".")[-1]
     unique_filename = f"{uuid.uuid4()}.{file_extension}"
     cloud_url = await upload_to_cloud(evidence_file, unique_filename)
     
-    # Update deposit with evidence URL
+    # Update deposit with cloud URL
     deposit.evidence_url = cloud_url
     db.commit()
     
-    # Use admin email from env variables
+    # Send email using EmailService
     admin_email = ADMIN_EMAIL or "admin@example.com"
+    email_service = EmailService()
     
-    # Send evidence to admin email
-    await send_email_notification(
-        email=admin_email,
+    email_body = f"""
+        <p><strong>User:</strong> {current_user.name} ({current_user.email})</p>
+        <p><strong>Crypto Type:</strong> {deposit.crypto_type.title()}</p>
+        <p><strong>Amount:</strong> {deposit.amount}</p>
+        <p><strong>USD Amount:</strong> {deposit.usd_amount}</p>
+        <p><strong>Deposit ID:</strong> {deposit.id}</p>
+        <p><strong>Transaction Hash:</strong> {deposit.transaction_hash or "Not provided"}</p>
+    """
+    
+    email_service.send_email(
+        to_email=admin_email,
         subject=f"New Deposit Evidence - {deposit.crypto_type.title()} Deposit #{deposit.id}",
-        template_type="deposit_evidence",
-        context={
-            "user_email": current_user.email,
-            "user_name": current_user.name,
-            "crypto_type": deposit.crypto_type.title(),
-            "amount": deposit.amount,
-            "usd_amount": deposit.usd_amount,
-            "deposit_id": deposit.id,
-            "evidence_url": deposit.evidence_url,
-            "transaction_hash": deposit.transaction_hash or "Not provided"
-        },
-        db=db,
+        body=email_body,
+        is_html=True,
         attachment_url=cloud_url
     )
     
+    # Log activity
     log_activity(
         db, current_user.id, "DEPOSIT_EVIDENCE_UPLOADED",
         f"Uploaded evidence for {deposit.crypto_type} deposit #{deposit.id}",
