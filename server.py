@@ -2018,6 +2018,7 @@ def convert_amount(
             "crypto_type": request.crypto_type
         }
 
+
 @app.post("/api/deposits/create")
 def create_deposit(
     deposit_data: DepositCreate,
@@ -2028,65 +2029,75 @@ def create_deposit(
     """Create a new crypto deposit with USD conversion"""
     if current_user.is_flagged:
         raise HTTPException(status_code=403, detail="Account flagged - deposits not allowed")
-    
+
+    # Normalize crypto_type
+    crypto_type = deposit_data.crypto_type.lower()
+
     # Validate input - must provide either crypto amount or USD amount
     if deposit_data.amount and deposit_data.usd_amount:
         raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount, not both")
-    
+
     if not deposit_data.amount and not deposit_data.usd_amount:
         raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount")
-    
+
     # Calculate both amounts
     if deposit_data.amount:
         crypto_amount = deposit_data.amount
-        usd_amount = convert_crypto_to_usd(crypto_amount, deposit_data.crypto_type, db)
+        usd_amount = convert_crypto_to_usd(crypto_amount, crypto_type, db)
     else:
         usd_amount = deposit_data.usd_amount
-        crypto_amount = convert_usd_to_crypto(usd_amount, deposit_data.crypto_type, db)
-    
+        crypto_amount = convert_usd_to_crypto(usd_amount, crypto_type, db)
+
     # Get deposit info from AdminSettings instead of DepositQRCode
     settings = db.query(AdminSettings).first()
     if not settings:
         raise HTTPException(status_code=404, detail="Admin settings not found")
-    
-    if deposit_data.crypto_type == "bitcoin":
+
+    if crypto_type == "bitcoin":
         wallet_address = settings.bitcoin_wallet_address
         qr_code_url = settings.bitcoin_deposit_qr
     else:  # ethereum
         wallet_address = settings.ethereum_wallet_address
         qr_code_url = settings.ethereum_deposit_qr
-    
+
     if not wallet_address:
-        raise HTTPException(status_code=404, detail=f"No wallet address configured for {deposit_data.crypto_type}")
-    
+        raise HTTPException(status_code=404, detail=f"No wallet address configured for {crypto_type}")
+
     # Save deposit record
     deposit = CryptoDeposit(
         user_id=current_user.id,
-        crypto_type=deposit_data.crypto_type,
+        crypto_type=crypto_type,
         amount=crypto_amount,
         usd_amount=usd_amount,
-        transaction_hash=deposit_data.transaction_hash,
+        transaction_hash=deposit_data.transaction_hash or None,  # ensure None if empty
         status=DepositStatus.PENDING
     )
-    
+
     db.add(deposit)
     db.commit()
     db.refresh(deposit)
-    
+
     log_activity(
         db, current_user.id, "DEPOSIT_CREATED",
-        f"Created {deposit_data.crypto_type} deposit of {crypto_amount} (${usd_amount} USD)",
+        f"Created {crypto_type} deposit of {crypto_amount} (${usd_amount} USD)",
         request.client.host
     )
-    
+
+    # Format amounts (crypto 8 decimals, USD 2 decimals)
+    def fmt_crypto(val: Decimal) -> str:
+        return str(val.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN))
+
+    def fmt_usd(val: Decimal) -> str:
+        return str(val.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+
     return {
         "message": "Deposit created successfully",
         "deposit_id": deposit.id,
-        "crypto_amount": crypto_amount,
-        "usd_amount": usd_amount,
+        "crypto_amount": fmt_crypto(crypto_amount),
+        "usd_amount": fmt_usd(usd_amount),
         "qr_code_url": qr_code_url,
         "wallet_address": wallet_address,
-        "crypto_type": deposit_data.crypto_type
+        "crypto_type": crypto_type
     }
 
 @app.post("/api/deposits/{deposit_id}/upload-evidence")
