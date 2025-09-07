@@ -3628,13 +3628,17 @@ def create_withdrawal(
 
     db.add(current_user)
 
+    # Generate transaction hash
+    tx_hash = str(uuid.uuid4())
+
     # Create withdrawal record
     new_withdrawal = Withdrawal(
         user_id=current_user.id,
-        crypto_type=withdrawal.crypto_type,
-        amount=float(withdrawal.amount),  # frontend expects float
+        crypto_type=str(withdrawal.crypto_type),  # convert enum to string
+        amount=float(withdrawal.amount),          # frontend expects float
         wallet_address=withdrawal.wallet_address,
-        status=WithdrawalStatus.PENDING,
+        status="pending",                         # store status as string
+        transaction_hash=tx_hash,                 # generate hash
         created_at=datetime.utcnow(),
     )
     db.add(new_withdrawal)
@@ -3651,9 +3655,9 @@ def create_withdrawal(
         amount=float(new_withdrawal.amount),
         usd_amount=withdrawal_usd,
         wallet_address=new_withdrawal.wallet_address,
-        status=new_withdrawal.status,  # ✅ no .value
+        status=new_withdrawal.status,  
         transaction_hash=new_withdrawal.transaction_hash,
-        created_at=new_withdrawal.created_at.isoformat(),  # ISO string for frontend
+        created_at=new_withdrawal.created_at.isoformat(),  # ISO string
     )
 
 
