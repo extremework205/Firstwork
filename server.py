@@ -3607,13 +3607,13 @@ def create_withdrawal(
     if withdrawal.amount > user_balance:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    # Deduct balance and calculate USD equivalent using admin rates (Decimal)
+    # Deduct balance and calculate USD equivalent (Decimal)
     if withdrawal.crypto_type == "bitcoin":
         current_user.bitcoin_balance -= withdrawal.amount
-        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * Decimal(admin_settings.bitcoin_rate_usd)
+        current_user.bitcoin_balance_usd = float(current_user.bitcoin_balance * Decimal(admin_settings.bitcoin_rate_usd))
     else:
         current_user.ethereum_balance -= withdrawal.amount
-        current_user.ethereum_balance_usd = current_user.ethereum_balance * Decimal(admin_settings.ethereum_rate_usd)
+        current_user.ethereum_balance_usd = float(current_user.ethereum_balance * Decimal(admin_settings.ethereum_rate_usd))
 
     db.add(current_user)
 
@@ -3621,7 +3621,7 @@ def create_withdrawal(
     new_withdrawal = Withdrawal(
         user_id=current_user.id,
         crypto_type=withdrawal.crypto_type,
-        amount=withdrawal.amount,
+        amount=float(withdrawal.amount),  # Convert to float for frontend
         wallet_address=withdrawal.wallet_address,
         status=WithdrawalStatus.PENDING,
         created_at=datetime.utcnow(),
@@ -3630,7 +3630,18 @@ def create_withdrawal(
     db.commit()
     db.refresh(new_withdrawal)
 
-    return new_withdrawal
+    # Ensure frontend-safe return
+    return WithdrawalResponse(
+        id=new_withdrawal.id,
+        user_id=new_withdrawal.user_id,
+        crypto_type=new_withdrawal.crypto_type,
+        amount=float(new_withdrawal.amount),
+        usd_amount=float(new_withdrawal.amount * (Decimal(admin_settings.bitcoin_rate_usd) if withdrawal.crypto_type == "bitcoin" else Decimal(admin_settings.ethereum_rate_usd))),
+        wallet_address=new_withdrawal.wallet_address,
+        status=new_withdrawal.status,
+        transaction_hash=new_withdrawal.transaction_hash,
+        created_at=new_withdrawal.created_at
+    )
 
 
 @app.get("/health")
