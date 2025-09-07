@@ -4,7 +4,7 @@ import string
 import smtplib
 import hashlib
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import List, Optional
 from enum import Enum
 import pytz # Import pytz for timezone handling
