@@ -3576,6 +3576,7 @@ async def get_user_profile(
     )
 
 
+
 @app.get("/api/user/withdrawals", response_model=List[WithdrawalResponse])
 def get_user_withdrawals(
     db: Session = Depends(get_db), 
@@ -3584,6 +3585,7 @@ def get_user_withdrawals(
     """
     Fetch all withdrawals for the logged-in user.
     """
+    # Fetch withdrawals
     withdrawals = (
         db.query(Withdrawal)
         .filter(Withdrawal.user_id == current_user.id)
@@ -3591,19 +3593,29 @@ def get_user_withdrawals(
         .all()
     )
 
+    # Get admin crypto rates
     admin_settings = db.query(AdminSettings).first()
     if not admin_settings:
         raise HTTPException(status_code=500, detail="Admin settings not configured")
 
     response = []
     for w in withdrawals:
-        # Determine display name for crypto
-        if w.crypto_type.lower() in ["bitcoin", "btc"]:
+        # Clean crypto_type string for consistency
+        crypto_type_clean = str(w.crypto_type).lower()
+
+        if crypto_type_clean in ["bitcoin", "btc", "cryptotype.bitcoin"]:
             crypto_display = "Bitcoin"
             rate = Decimal(admin_settings.bitcoin_rate_usd)
-        else:
+            crypto_symbol = "BTC"
+        elif crypto_type_clean in ["ethereum", "eth", "cryptotype.ethereum"]:
             crypto_display = "Ethereum"
             rate = Decimal(admin_settings.ethereum_rate_usd)
+            crypto_symbol = "ETH"
+        else:
+            # fallback for any unexpected types
+            crypto_display = crypto_type_clean.capitalize()
+            rate = Decimal(admin_settings.bitcoin_rate_usd)
+            crypto_symbol = crypto_display[:3].upper()
 
         # Calculate USD dynamically
         usd_amount = float(Decimal(w.amount) * rate)
@@ -3611,7 +3623,7 @@ def get_user_withdrawals(
         response.append(
             WithdrawalResponse(
                 id=w.id,
-                crypto_type=crypto_display,  # frontend-friendly
+                crypto_type=crypto_display,       # friendly name
                 amount=float(w.amount),
                 usd_amount=usd_amount,
                 wallet_address=w.wallet_address,
@@ -3622,8 +3634,6 @@ def get_user_withdrawals(
         )
 
     return response
-
-
 
 
 @app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
