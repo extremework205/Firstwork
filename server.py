@@ -3584,6 +3584,7 @@ def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Dep
     )
     return withdrawals
 
+
 @app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
 def create_withdrawal(
     withdrawal: WithdrawalCreate,
@@ -3606,13 +3607,13 @@ def create_withdrawal(
     if withdrawal.amount > user_balance:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    # Deduct balance and calculate USD equivalent using admin rates
+    # Deduct balance and calculate USD equivalent using admin rates (Decimal)
     if withdrawal.crypto_type == "bitcoin":
         current_user.bitcoin_balance -= withdrawal.amount
-        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * float(admin_settings.bitcoin_rate_usd)
+        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * Decimal(admin_settings.bitcoin_rate_usd)
     else:
         current_user.ethereum_balance -= withdrawal.amount
-        current_user.ethereum_balance_usd = current_user.ethereum_balance * float(admin_settings.ethereum_rate_usd)
+        current_user.ethereum_balance_usd = current_user.ethereum_balance * Decimal(admin_settings.ethereum_rate_usd)
 
     db.add(current_user)
 
