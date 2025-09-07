@@ -454,15 +454,28 @@ class EmailService:
         self.from_email = FROM_EMAIL
         self.from_name = FROM_NAME
 
-    def send_email(self, to_email: str, subject: str, body: str, is_html: bool = False):
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        is_html: bool = False,
+        attachment_url: str = None
+    ):
         try:
+            # Create the email message
             msg = MIMEMultipart()
             msg['From'] = formataddr((self.from_name, self.from_email))
             msg['To'] = to_email
             msg['Subject'] = subject
 
+            # Append attachment URL to body if provided
+            if attachment_url:
+                body += f"<br><br>📎 Evidence File: <a href='{attachment_url}' target='_blank'>{attachment_url}</a>"
+
             msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
 
+            # Send email via SSL or STARTTLS
             if int(self.smtp_port) == 465:
                 # SSL mode
                 with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
@@ -477,6 +490,7 @@ class EmailService:
                     server.sendmail(self.from_email, to_email, msg.as_string())
 
             return True
+
         except Exception as e:
             print(f"Failed to send email: {e}")
             return False
