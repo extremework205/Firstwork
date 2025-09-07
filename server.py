@@ -2124,28 +2124,17 @@ async def upload_deposit_evidence(
     if evidence_file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only images (JPEG, PNG, GIF) and PDF files are allowed")
     
-    # Save file (in production, use cloud storage like AWS S3)
-    import os
-    import uuid
-    
-    upload_dir = "uploads/deposit_evidence"
-    os.makedirs(upload_dir, exist_ok=True)
-    
+    # Upload to cloud storage instead of local folder
     file_extension = evidence_file.filename.split(".")[-1]
     unique_filename = f"{uuid.uuid4()}.{file_extension}"
-    file_path = os.path.join(upload_dir, unique_filename)
-    
-    with open(file_path, "wb") as buffer:
-        content = await evidence_file.read()
-        buffer.write(content)
+    cloud_url = await upload_to_cloud(evidence_file, unique_filename)
     
     # Update deposit with evidence URL
-    deposit.evidence_url = f"/uploads/deposit_evidence/{unique_filename}"
+    deposit.evidence_url = cloud_url
     db.commit()
     
-    # Get admin email for forwarding evidence
-    admin_email_setting = db.query(AdminSettings).filter(AdminSettings.key == "admin_email").first()
-    admin_email = admin_email_setting.value if admin_email_setting else "admin@example.com"
+    # Use admin email from env variables
+    admin_email = ADMIN_EMAIL or "admin@example.com"
     
     # Send evidence to admin email
     await send_email_notification(
@@ -2163,7 +2152,7 @@ async def upload_deposit_evidence(
             "transaction_hash": deposit.transaction_hash or "Not provided"
         },
         db=db,
-        attachment_path=file_path  # Attach the evidence file
+        attachment_url=cloud_url
     )
     
     log_activity(
