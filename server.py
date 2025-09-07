@@ -3571,6 +3571,61 @@ async def get_user_profile(
         referred_users_count=referred_count
     )
 
+@app.get("/api/user/withdrawals", response_model=List[WithdrawalResponse])
+def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Fetch all withdrawals for the logged-in user.
+    """
+    withdrawals = (
+        db.query(Withdrawal)
+        .filter(Withdrawal.user_id == current_user.id)
+        .order_by(Withdrawal.created_at.desc())
+        .all()
+    )
+    return withdrawals
+
+@app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
+def create_withdrawal(
+    withdrawal: WithdrawalCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new withdrawal request for the logged-in user.
+    """
+    # Fetch user balance
+    user_balance = (
+        current_user.bitcoin_balance if withdrawal.crypto_type == "bitcoin" else current_user.ethereum_balance
+    )
+
+    if withdrawal.amount > user_balance:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+
+    # Deduct balance
+    if withdrawal.crypto_type == "bitcoin":
+        current_user.bitcoin_balance -= withdrawal.amount
+        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * get_current_bitcoin_price()
+    else:
+        current_user.ethereum_balance -= withdrawal.amount
+        current_user.ethereum_balance_usd = current_user.ethereum_balance * get_current_ethereum_price()
+
+    db.add(current_user)
+
+    # Create withdrawal record
+    new_withdrawal = Withdrawal(
+        user_id=current_user.id,
+        crypto_type=withdrawal.crypto_type,
+        amount=withdrawal.amount,
+        wallet_address=withdrawal.wallet_address,
+        status=WithdrawalStatus.PENDING,
+        created_at=datetime.utcnow(),
+    )
+    db.add(new_withdrawal)
+    db.commit()
+    db.refresh(new_withdrawal)
+
+    return new_withdrawal
+
 
 @app.get("/health")
 @app.head("/health")
