@@ -433,6 +433,7 @@ class Withdrawal(Base):
     status = Column(String, default=WithdrawalStatus.PENDING)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
+    transaction_hash = Column(String, nullable=True)  # optional, default None
     
     user = relationship("User", back_populates="withdrawals")
 
