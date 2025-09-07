@@ -3588,7 +3588,6 @@ def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Dep
     return withdrawals
 
 
-
 @app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
 def create_withdrawal(
     withdrawal: WithdrawalCreate,
@@ -3644,13 +3643,14 @@ def create_withdrawal(
     # Calculate USD amount for frontend
     withdrawal_usd = float(Decimal(new_withdrawal.amount) * rate)
 
+    # Return frontend-safe response
     return WithdrawalResponse(
         id=new_withdrawal.id,
         crypto_type=new_withdrawal.crypto_type,
         amount=float(new_withdrawal.amount),
         usd_amount=withdrawal_usd,
         wallet_address=new_withdrawal.wallet_address,
-        status=new_withdrawal.status.value,  # convert enum to string
+        status=new_withdrawal.status,  # ✅ no .value
         transaction_hash=new_withdrawal.transaction_hash,
         created_at=new_withdrawal.created_at.isoformat(),  # ISO string for frontend
     )
