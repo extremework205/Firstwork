@@ -2044,15 +2044,22 @@ def create_deposit(
         usd_amount = deposit_data.usd_amount
         crypto_amount = convert_usd_to_crypto(usd_amount, deposit_data.crypto_type, db)
     
-    # Get deposit info (QR code and wallet address)
-    qr_info = db.query(DepositQRCode).filter(
-        DepositQRCode.crypto_type == deposit_data.crypto_type,
-        DepositQRCode.is_active == True
-    ).first()
+    # Get deposit info from AdminSettings instead of DepositQRCode
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        raise HTTPException(status_code=404, detail="Admin settings not found")
     
-    if not qr_info:
-        raise HTTPException(status_code=404, detail=f"No deposit info available for {deposit_data.crypto_type}")
+    if deposit_data.crypto_type == "bitcoin":
+        wallet_address = settings.bitcoin_wallet_address
+        qr_code_url = settings.bitcoin_deposit_qr
+    else:  # ethereum
+        wallet_address = settings.ethereum_wallet_address
+        qr_code_url = settings.ethereum_deposit_qr
     
+    if not wallet_address:
+        raise HTTPException(status_code=404, detail=f"No wallet address configured for {deposit_data.crypto_type}")
+    
+    # Save deposit record
     deposit = CryptoDeposit(
         user_id=current_user.id,
         crypto_type=deposit_data.crypto_type,
@@ -2077,8 +2084,8 @@ def create_deposit(
         "deposit_id": deposit.id,
         "crypto_amount": crypto_amount,
         "usd_amount": usd_amount,
-        "qr_code_url": qr_info.qr_code_url,
-        "wallet_address": qr_info.wallet_address,
+        "qr_code_url": qr_code_url,
+        "wallet_address": wallet_address,
         "crypto_type": deposit_data.crypto_type
     }
 
