@@ -18,3 +18,4 @@ httpx
 pyotp
 slowapi
 gunicorn
+cloudinary==1.33.0
