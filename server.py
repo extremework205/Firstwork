@@ -2212,13 +2212,16 @@ async def upload_deposit_evidence(
         "evidence_url": deposit.evidence_url
     }
 
+
 @app.post("/api/deposits/{deposit_id}/submit")
-async def submit_deposit(
+def submit_deposit(
     deposit_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Submit deposit for admin review (with or without evidence)"""
+    
+    # Fetch the deposit
     deposit = db.query(CryptoDeposit).filter(
         CryptoDeposit.id == deposit_id,
         CryptoDeposit.user_id == current_user.id
@@ -2230,29 +2233,31 @@ async def submit_deposit(
     if deposit.status != DepositStatus.PENDING:
         raise HTTPException(status_code=400, detail="Deposit already submitted")
     
-    # Get admin email for notification
-    admin_email_setting = db.query(AdminSettings).filter(AdminSettings.key == "admin_email").first()
-    admin_email = admin_email_setting.value if admin_email_setting else "admin@example.com"
+    # Update deposit status to submitted
+    deposit.status = DepositStatus.SUBMITTED
+    db.commit()
     
-    # Send notification to admin about new deposit submission
-    await send_email_notification(
-        email=admin_email,
-        subject=f"New Deposit Submission - {deposit.crypto_type.title()} #{deposit.id}",
-        template_type="deposit_submission",
-        context={
-            "user_email": current_user.email,
-            "user_name": current_user.name,
-            "crypto_type": deposit.crypto_type.title(),
-            "amount": deposit.amount,
-            "usd_amount": deposit.usd_amount,
-            "deposit_id": deposit.id,
-            "has_evidence": bool(deposit.evidence_url),
-            "evidence_url": deposit.evidence_url,
-            "transaction_hash": deposit.transaction_hash or "Not provided"
-        },
-        db=db
+    # Prepare admin email
+    admin_email = ADMIN_EMAIL or "admin@example.com"
+    email_body = f"""
+        <p><strong>User:</strong> {current_user.name} ({current_user.email})</p>
+        <p><strong>Crypto Type:</strong> {deposit.crypto_type.title()}</p>
+        <p><strong>Amount:</strong> {deposit.amount}</p>
+        <p><strong>USD Amount:</strong> {deposit.usd_amount}</p>
+        <p><strong>Deposit ID:</strong> {deposit.id}</p>
+        <p><strong>Transaction Hash:</strong> {deposit.transaction_hash or "Not provided"}</p>
+        {"<p><strong>Evidence:</strong> <a href='" + deposit.evidence_url + "'>" + deposit.evidence_url + "</a></p>" if deposit.evidence_url else ""}
+    """
+    
+    # Send email using EmailService
+    email_service.send_email(
+        to_email=admin_email,
+        subject=f"New Deposit Submission - {deposit.crypto_type.title()} Deposit #{deposit.id}",
+        body=email_body,
+        is_html=True
     )
     
+    # Log activity
     log_activity(
         db, current_user.id, "DEPOSIT_SUBMITTED",
         f"Submitted {deposit.crypto_type} deposit #{deposit.id} for admin review",
@@ -2260,7 +2265,7 @@ async def submit_deposit(
     )
     
     return {"message": "Deposit submitted for admin review"}
-
+    
 
 @app.get("/api/user/deposits")
 def get_user_deposits(
