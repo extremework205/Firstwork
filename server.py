@@ -2239,25 +2239,23 @@ def submit_deposit(
     deposit.status = DepositStatus.SUBMITTED
     db.commit()
     
-    # Prepare admin email
-    admin_email = ADMIN_EMAIL or "admin@example.com"
-    email_body = f"""
-        <p><strong>User:</strong> {current_user.name} ({current_user.email})</p>
-        <p><strong>Crypto Type:</strong> {deposit.crypto_type.title()}</p>
-        <p><strong>Amount:</strong> {deposit.amount}</p>
-        <p><strong>USD Amount:</strong> {deposit.usd_amount}</p>
-        <p><strong>Deposit ID:</strong> {deposit.id}</p>
-        <p><strong>Transaction Hash:</strong> {deposit.transaction_hash or "Not provided"}</p>
-        {"<p><strong>Evidence:</strong> <a href='" + deposit.evidence_url + "'>" + deposit.evidence_url + "</a></p>" if deposit.evidence_url else ""}
-    """
-    
-    # Send email using EmailService
-    email_service.send_email(
-        to_email=admin_email,
-        subject=f"New Deposit Submission - {deposit.crypto_type.title()} Deposit #{deposit.id}",
-        body=email_body,
-        is_html=True
-    )
+    # Only send email if evidence has NOT been uploaded
+    if not deposit.evidence_url:
+        admin_email = ADMIN_EMAIL or "admin@example.com"
+        email_body = f"""
+            <p><strong>User:</strong> {current_user.name} ({current_user.email})</p>
+            <p><strong>Crypto Type:</strong> {deposit.crypto_type.title()}</p>
+            <p><strong>Amount:</strong> {deposit.amount}</p>
+            <p><strong>USD Amount:</strong> {deposit.usd_amount}</p>
+            <p><strong>Deposit ID:</strong> {deposit.id}</p>
+            <p><strong>Transaction Hash:</strong> {deposit.transaction_hash or "Not provided"}</p>
+        """
+        email_service.send_email(
+            to_email=admin_email,
+            subject=f"New Deposit Submission - {deposit.crypto_type.title()} Deposit #{deposit.id}",
+            body=email_body,
+            is_html=True
+        )
     
     # Log activity
     log_activity(
