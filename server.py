@@ -1042,9 +1042,12 @@ class WithdrawalCreate(BaseModel):
 class WithdrawalResponse(BaseModel):
     id: int
     crypto_type: str
-    amount: Decimal
-    status: WithdrawalStatus
-    created_at: datetime
+    amount: float
+    usd_amount: float
+    wallet_address: str
+    status: str
+    transaction_hash: Optional[str] = None
+    created_at: str  # ISO formatted datetime
 
     class Config:
         from_attributes = True
@@ -3585,6 +3588,7 @@ def get_user_withdrawals(db: Session = Depends(get_db), current_user: User = Dep
     return withdrawals
 
 
+
 @app.post("/api/withdrawals/create", response_model=WithdrawalResponse)
 def create_withdrawal(
     withdrawal: WithdrawalCreate,
@@ -3599,21 +3603,28 @@ def create_withdrawal(
     if not admin_settings:
         raise HTTPException(status_code=500, detail="Admin settings not configured")
 
-    # Fetch user balance
-    user_balance = (
-        current_user.bitcoin_balance if withdrawal.crypto_type == "bitcoin" else current_user.ethereum_balance
-    )
+    # Determine user balance and rate
+    if withdrawal.crypto_type == "bitcoin":
+        balance = current_user.bitcoin_balance
+        rate = Decimal(admin_settings.bitcoin_rate_usd)
+    else:
+        balance = current_user.ethereum_balance
+        rate = Decimal(admin_settings.ethereum_rate_usd)
 
-    if withdrawal.amount > user_balance:
+    # Check sufficient balance
+    if withdrawal.amount > balance:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    # Deduct balance and calculate USD equivalent (Decimal)
+    # Deduct balance and calculate USD
+    new_balance = balance - withdrawal.amount
+    usd_balance = new_balance * rate
+
     if withdrawal.crypto_type == "bitcoin":
-        current_user.bitcoin_balance -= withdrawal.amount
-        current_user.bitcoin_balance_usd = float(current_user.bitcoin_balance * Decimal(admin_settings.bitcoin_rate_usd))
+        current_user.bitcoin_balance = new_balance
+        current_user.bitcoin_balance_usd = float(usd_balance)
     else:
-        current_user.ethereum_balance -= withdrawal.amount
-        current_user.ethereum_balance_usd = float(current_user.ethereum_balance * Decimal(admin_settings.ethereum_rate_usd))
+        current_user.ethereum_balance = new_balance
+        current_user.ethereum_balance_usd = float(usd_balance)
 
     db.add(current_user)
 
@@ -3621,7 +3632,7 @@ def create_withdrawal(
     new_withdrawal = Withdrawal(
         user_id=current_user.id,
         crypto_type=withdrawal.crypto_type,
-        amount=float(withdrawal.amount),  # Convert to float for frontend
+        amount=float(withdrawal.amount),  # frontend expects float
         wallet_address=withdrawal.wallet_address,
         status=WithdrawalStatus.PENDING,
         created_at=datetime.utcnow(),
@@ -3630,17 +3641,18 @@ def create_withdrawal(
     db.commit()
     db.refresh(new_withdrawal)
 
-    # Ensure frontend-safe return
+    # Calculate USD amount for frontend
+    withdrawal_usd = float(Decimal(new_withdrawal.amount) * rate)
+
     return WithdrawalResponse(
         id=new_withdrawal.id,
-        user_id=new_withdrawal.user_id,
         crypto_type=new_withdrawal.crypto_type,
         amount=float(new_withdrawal.amount),
-        usd_amount=float(new_withdrawal.amount * (Decimal(admin_settings.bitcoin_rate_usd) if withdrawal.crypto_type == "bitcoin" else Decimal(admin_settings.ethereum_rate_usd))),
+        usd_amount=withdrawal_usd,
         wallet_address=new_withdrawal.wallet_address,
-        status=new_withdrawal.status,
+        status=new_withdrawal.status.value,  # convert enum to string
         transaction_hash=new_withdrawal.transaction_hash,
-        created_at=new_withdrawal.created_at
+        created_at=new_withdrawal.created_at.isoformat(),  # ISO string for frontend
     )
 
 
