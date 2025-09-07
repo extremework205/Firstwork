@@ -1209,6 +1209,11 @@ class PortfolioAnalytics(BaseModel):
     asset_allocation: dict
     growth_rate: dict
 
+class DepositConvertRequest(BaseModel):
+    crypto_type: CryptoType
+    amount: Optional[Decimal] = None
+    usd_amount: Optional[Decimal] = None
+
 class EarningsBreakdown(BaseModel):
     mining_earnings: Decimal
     referral_earnings: Decimal
@@ -1982,35 +1987,35 @@ def get_crypto_rates(db: Session = Depends(get_db)):
         "ethereum_usd_rate": settings.ethereum_rate_usd
     }
 
+
 @app.post("/api/deposits/convert")
 def convert_amount(
-    crypto_type: CryptoType,
-    amount: Optional[Decimal] = None,
-    usd_amount: Optional[Decimal] = None,
+    request: DepositConvertRequest,
     db: Session = Depends(get_db)
 ):
     """Convert between crypto and USD amounts"""
-    if amount and usd_amount:
+
+    if request.amount and request.usd_amount:
         raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount, not both")
     
-    if not amount and not usd_amount:
+    if not request.amount and not request.usd_amount:
         raise HTTPException(status_code=400, detail="Provide either crypto amount or USD amount")
     
-    if amount:
+    if request.amount:
         # Convert crypto to USD
-        usd_equivalent = convert_crypto_to_usd(amount, crypto_type, db)
+        usd_equivalent = convert_crypto_to_usd(request.amount, request.crypto_type, db)
         return {
-            "crypto_amount": amount,
+            "crypto_amount": request.amount,
             "usd_amount": usd_equivalent,
-            "crypto_type": crypto_type
+            "crypto_type": request.crypto_type
         }
     else:
         # Convert USD to crypto
-        crypto_equivalent = convert_usd_to_crypto(usd_amount, crypto_type, db)
+        crypto_equivalent = convert_usd_to_crypto(request.usd_amount, request.crypto_type, db)
         return {
             "crypto_amount": crypto_equivalent,
-            "usd_amount": usd_amount,
-            "crypto_type": crypto_type
+            "usd_amount": request.usd_amount,
+            "crypto_type": request.crypto_type
         }
 
 @app.post("/api/deposits/create")
