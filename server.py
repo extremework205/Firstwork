@@ -456,6 +456,32 @@ class EmailService:
         self.from_email = FROM_EMAIL
         self.from_name = FROM_NAME
 
+    @staticmethod
+    async def upload_to_cloud(file: UploadFile, public_id: str = None) -> str:
+        """
+        Uploads a file to Cloudinary and returns the file URL.
+        
+        Args:
+            file: FastAPI UploadFile
+            public_id: Optional custom name for the file in Cloudinary
+
+        Returns:
+            str: URL of the uploaded file
+        """
+        # Read file bytes
+        file_bytes = await file.read()
+
+        # Upload to Cloudinary
+        result = cloudinary.uploader.upload(
+            file_bytes,
+            resource_type="auto",  # automatically detects image, video, pdf, etc.
+            public_id=public_id,
+            overwrite=True
+        )
+
+        # Return secure URL
+        return result.get("secure_url")
+
     def send_email(
         self,
         to_email: str,
@@ -2142,19 +2168,19 @@ async def upload_deposit_evidence(
     if evidence_file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only images (JPEG, PNG, GIF) and PDF files are allowed")
     
-    # Upload file to cloud storage
+    # Upload file to cloud storage using EmailService instance
     file_extension = evidence_file.filename.split(".")[-1]
     unique_filename = f"{uuid.uuid4()}.{file_extension}"
-    cloud_url = await upload_to_cloud(evidence_file, unique_filename)
+    
+    email_service = EmailService()
+    cloud_url = await email_service.upload_to_cloud(evidence_file, unique_filename)
     
     # Update deposit with cloud URL
     deposit.evidence_url = cloud_url
     db.commit()
     
-    # Send email using EmailService
+    # Send email to admin
     admin_email = ADMIN_EMAIL or "admin@example.com"
-    email_service = EmailService()
-    
     email_body = f"""
         <p><strong>User:</strong> {current_user.name} ({current_user.email})</p>
         <p><strong>Crypto Type:</strong> {deposit.crypto_type.title()}</p>
