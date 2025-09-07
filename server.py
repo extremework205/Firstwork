@@ -18,6 +18,8 @@ import time
 import logging
 import random
 import asyncio
+import cloudinary
+import cloudinary.uploader
 
 # FastAPI and related imports
 from fastapi import FastAPI, Depends, WebSocket, HTTPException, status, Request, Query, Form, UploadFile, File
