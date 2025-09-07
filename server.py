@@ -3593,6 +3593,11 @@ def create_withdrawal(
     """
     Create a new withdrawal request for the logged-in user.
     """
+    # Fetch admin settings for crypto rates
+    admin_settings = db.query(AdminSettings).first()
+    if not admin_settings:
+        raise HTTPException(status_code=500, detail="Admin settings not configured")
+
     # Fetch user balance
     user_balance = (
         current_user.bitcoin_balance if withdrawal.crypto_type == "bitcoin" else current_user.ethereum_balance
@@ -3601,13 +3606,13 @@ def create_withdrawal(
     if withdrawal.amount > user_balance:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    # Deduct balance
+    # Deduct balance and calculate USD equivalent using admin rates
     if withdrawal.crypto_type == "bitcoin":
         current_user.bitcoin_balance -= withdrawal.amount
-        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * get_current_bitcoin_price()
+        current_user.bitcoin_balance_usd = current_user.bitcoin_balance * float(admin_settings.bitcoin_rate_usd)
     else:
         current_user.ethereum_balance -= withdrawal.amount
-        current_user.ethereum_balance_usd = current_user.ethereum_balance * get_current_ethereum_price()
+        current_user.ethereum_balance_usd = current_user.ethereum_balance * float(admin_settings.ethereum_rate_usd)
 
     db.add(current_user)
 
