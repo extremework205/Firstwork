@@ -150,6 +150,7 @@ class CryptoType(str, Enum):
 
 class DepositStatus(str, Enum):
     PENDING = "pending"
+    SUBMITTED = "submitted"  # <-- add this
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
 
