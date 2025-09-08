@@ -988,12 +988,20 @@ class CryptoTransferCreate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def either_email_or_user_id(self):
-        if not self.to_email and not self.to_user_id:
+    def either_email_or_user_id(cls, values):
+        to_email = values.get('to_email')
+        to_user_id = values.get('to_user_id')
+
+        if not to_email and to_user_id is None:
             raise ValueError('Either to_email or to_user_id must be provided')
-        if self.to_email and self.to_user_id:
+        if to_email and to_user_id is not None:
             raise ValueError('Provide either to_email or to_user_id, not both')
-        return self
+
+        # Convert string numbers to int
+        if isinstance(to_user_id, str) and to_user_id.isdigit():
+            values['to_user_id'] = int(to_user_id)
+
+        return values
 
 class CryptoTransferResponse(BaseModel):
     id: int
