@@ -977,7 +977,7 @@ class OTPVerify(BaseModel):
 # Crypto Transfer Schemas
 class CryptoTransferCreate(BaseModel):
     to_email: Optional[EmailStr] = None
-    to_user_id: Optional[str] = None
+    to_user_id: Optional[int] = None  # <-- change to int
     crypto_type: CryptoType
     amount: Decimal
 
@@ -989,7 +989,6 @@ class CryptoTransferCreate(BaseModel):
 
     @model_validator(mode="after")
     def either_email_or_user_id(self):
-        # self is the model instance
         if not self.to_email and not self.to_user_id:
             raise ValueError('Either to_email or to_user_id must be provided')
         if self.to_email and self.to_user_id:
