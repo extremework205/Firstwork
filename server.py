@@ -977,7 +977,7 @@ class OTPVerify(BaseModel):
 # Crypto Transfer Schemas
 class CryptoTransferCreate(BaseModel):
     to_email: Optional[EmailStr] = None
-    to_user_id: Optional[int] = None  # <-- change to int
+    to_user_id: Optional[str] = None  # <-- now matches the DB type
     crypto_type: CryptoType
     amount: Decimal
 
@@ -3730,7 +3730,7 @@ def create_transfer(
     if transfer_data.to_email:
         recipient = db.query(User).filter(User.email == transfer_data.to_email).first()
     else:
-        recipient = db.query(User).filter(User.id == transfer_data.to_user_id).first()
+        recipient = db.query(User).filter(User.user_id == transfer_data.to_user_id).first()
 
     if not recipient:
         raise HTTPException(status_code=404, detail="Recipient not found")
