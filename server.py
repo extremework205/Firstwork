@@ -996,6 +996,7 @@ class CryptoTransferCreate(BaseModel):
             raise ValueError('Provide either to_email or to_user_id, not both')
         return self
 
+
 class CryptoTransferResponse(BaseModel):
     id: int
     crypto_type: str
@@ -1005,7 +1006,7 @@ class CryptoTransferResponse(BaseModel):
     created_at: str
     from_user: BasicUserInfo
     to_user: BasicUserInfo
-    direction: str  # "sent" or "received"
+    direction: Optional[str] = None  # "sent" or "received", optional
 
     class Config:
         from_attributes = True
