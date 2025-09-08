@@ -3776,8 +3776,8 @@ def create_transfer(
         to_user_id=recipient.id,
         crypto_type=crypto_display,
         amount=float(transfer_data.amount),
-        usd_amount=usd_amount,            # ✅ save permanently
-        transaction_hash=tx_hash,         # ✅ save permanently
+        usd_amount=usd_amount,
+        transaction_hash=tx_hash,
         created_at=datetime.utcnow()
     )
     db.add(new_transfer)
@@ -3793,8 +3793,16 @@ def create_transfer(
         usd_amount=float(new_transfer.usd_amount),
         transaction_hash=new_transfer.transaction_hash,
         created_at=new_transfer.created_at.isoformat(),
-        from_user=BasicUserInfo(id=current_user.id, email=current_user.email),
-        to_user=BasicUserInfo(id=recipient.id, email=recipient.email),
+        from_user=BasicUserInfo(
+            id=current_user.id,
+            email=current_user.email,
+            name=current_user.name
+        ),
+        to_user=BasicUserInfo(
+            id=recipient.id,
+            email=recipient.email,
+            name=recipient.name
+        ),
     )
 
 
@@ -3824,11 +3832,19 @@ def get_user_transfers(
                 id=t.id,
                 crypto_type=t.crypto_type,
                 amount=float(t.amount),
-                usd_amount=float(t.usd_amount),               # ✅ use saved value
-                transaction_hash=t.transaction_hash,          # ✅ use saved value
+                usd_amount=float(t.usd_amount),
+                transaction_hash=t.transaction_hash,
                 created_at=t.created_at.isoformat(),
-                from_user=BasicUserInfo(id=t.from_user.id, email=t.from_user.email),
-                to_user=BasicUserInfo(id=t.to_user.id, email=t.to_user.email),
+                from_user=BasicUserInfo(
+                    id=t.from_user.id,
+                    email=t.from_user.email,
+                    name=t.from_user.name
+                ),
+                to_user=BasicUserInfo(
+                    id=t.to_user.id,
+                    email=t.to_user.email,
+                    name=t.to_user.name
+                ),
             )
         )
 
