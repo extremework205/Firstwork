@@ -395,8 +395,8 @@ class CryptoTransfer(Base):
     __tablename__ = "crypto_transfers"
     
     id = Column(Integer, primary_key=True, index=True)
-    from_user_id = Column(String, ForeignKey("users.user_id"))  # <-- string now
-    to_user_id = Column(String, ForeignKey("users.user_id"))    # <-- string now
+    from_user_id = Column(Integer, ForeignKey("users.id"))  # back to integer FK
+    to_user_id = Column(Integer, ForeignKey("users.id"))    # back to integer FK
     crypto_type = Column(String, nullable=False)  # Bitcoin or Ethereum
     amount = Column(SQLDecimal(18, 8), nullable=False)
     usd_amount = Column(SQLDecimal(18, 2), nullable=False)  # store equivalent in USD
