@@ -397,13 +397,15 @@ class CryptoTransfer(Base):
     id = Column(Integer, primary_key=True, index=True)
     from_user_id = Column(Integer, ForeignKey("users.id"))
     to_user_id = Column(Integer, ForeignKey("users.id"))
-    crypto_type = Column(String, nullable=False)  # bitcoin or ethereum
+    crypto_type = Column(String, nullable=False)  # Bitcoin or Ethereum
     amount = Column(SQLDecimal(18, 8), nullable=False)
+    usd_amount = Column(SQLDecimal(18, 2), nullable=False)  # store equivalent in USD
+    transaction_hash = Column(String, unique=True, index=True, nullable=False)  # ✅ unique reference
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     from_user = relationship("User", foreign_keys=[from_user_id], back_populates="sent_transfers")
     to_user = relationship("User", foreign_keys=[to_user_id], back_populates="received_transfers")
-
+    
 class MiningSession(Base):
     __tablename__ = "mining_sessions"
     
@@ -997,8 +999,10 @@ class CryptoTransferCreate(BaseModel):
 class CryptoTransferResponse(BaseModel):
     id: int
     crypto_type: str
-    amount: Decimal
-    created_at: datetime
+    amount: float
+    usd_amount: float
+    transaction_hash: str
+    created_at: str
     from_user: BasicUserInfo
     to_user: BasicUserInfo
 
@@ -3710,6 +3714,125 @@ def create_withdrawal(
         transaction_hash=new_withdrawal.transaction_hash,
         created_at=new_withdrawal.created_at.isoformat(),  # ISO string
     )
+
+@app.post("/api/transfers/create", response_model=CryptoTransferResponse)
+def create_transfer(
+    transfer_data: CryptoTransferCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a crypto transfer between users.
+    """
+
+    # Validate recipient
+    if transfer_data.to_email:
+        recipient = db.query(User).filter(User.email == transfer_data.to_email).first()
+    else:
+        recipient = db.query(User).filter(User.id == transfer_data.to_user_id).first()
+
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    if recipient.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot transfer to yourself")
+
+    # Fetch admin settings
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        raise HTTPException(status_code=500, detail="Admin settings not configured")
+
+    # Determine crypto type and rate
+    crypto_type_clean = transfer_data.crypto_type.value.lower()
+    if crypto_type_clean == "bitcoin":
+        rate = Decimal(settings.bitcoin_rate_usd)
+        if transfer_data.amount > current_user.bitcoin_balance:
+            raise HTTPException(status_code=400, detail="Insufficient Bitcoin balance")
+        current_user.bitcoin_balance -= transfer_data.amount
+        recipient.bitcoin_balance += transfer_data.amount
+
+        current_user.bitcoin_balance_usd = float(current_user.bitcoin_balance * rate)
+        recipient.bitcoin_balance_usd = float(recipient.bitcoin_balance * rate)
+        crypto_display = "Bitcoin"
+    else:
+        rate = Decimal(settings.ethereum_rate_usd)
+        if transfer_data.amount > current_user.ethereum_balance:
+            raise HTTPException(status_code=400, detail="Insufficient Ethereum balance")
+        current_user.ethereum_balance -= transfer_data.amount
+        recipient.ethereum_balance += transfer_data.amount
+
+        current_user.ethereum_balance_usd = float(current_user.ethereum_balance * rate)
+        recipient.ethereum_balance_usd = float(recipient.ethereum_balance * rate)
+        crypto_display = "Ethereum"
+
+    # Generate transaction hash
+    tx_hash = str(uuid.uuid4())
+
+    # USD amount
+    usd_amount = float(Decimal(transfer_data.amount) * rate)
+
+    # Create transfer record
+    new_transfer = CryptoTransfer(
+        from_user_id=current_user.id,
+        to_user_id=recipient.id,
+        crypto_type=crypto_display,
+        amount=float(transfer_data.amount),
+        usd_amount=usd_amount,            # ✅ save permanently
+        transaction_hash=tx_hash,         # ✅ save permanently
+        created_at=datetime.utcnow()
+    )
+    db.add(new_transfer)
+    db.add(current_user)
+    db.add(recipient)
+    db.commit()
+    db.refresh(new_transfer)
+
+    return CryptoTransferResponse(
+        id=new_transfer.id,
+        crypto_type=new_transfer.crypto_type,
+        amount=float(new_transfer.amount),
+        usd_amount=float(new_transfer.usd_amount),
+        transaction_hash=new_transfer.transaction_hash,
+        created_at=new_transfer.created_at.isoformat(),
+        from_user=BasicUserInfo(id=current_user.id, email=current_user.email),
+        to_user=BasicUserInfo(id=recipient.id, email=recipient.email),
+    )
+
+
+@app.get("/api/user/transfers", response_model=List[CryptoTransferResponse])
+def get_user_transfers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Fetch all crypto transfers involving the logged-in user.
+    """
+
+    transfers = (
+        db.query(CryptoTransfer)
+        .filter(
+            (CryptoTransfer.from_user_id == current_user.id) |
+            (CryptoTransfer.to_user_id == current_user.id)
+        )
+        .order_by(CryptoTransfer.created_at.desc())
+        .all()
+    )
+
+    results = []
+    for t in transfers:
+        results.append(
+            CryptoTransferResponse(
+                id=t.id,
+                crypto_type=t.crypto_type,
+                amount=float(t.amount),
+                usd_amount=float(t.usd_amount),               # ✅ use saved value
+                transaction_hash=t.transaction_hash,          # ✅ use saved value
+                created_at=t.created_at.isoformat(),
+                from_user=BasicUserInfo(id=t.from_user.id, email=t.from_user.email),
+                to_user=BasicUserInfo(id=t.to_user.id, email=t.to_user.email),
+            )
+        )
+
+    return results
 
 
 @app.get("/health")
