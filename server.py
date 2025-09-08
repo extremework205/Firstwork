@@ -977,7 +977,7 @@ class OTPVerify(BaseModel):
 # Crypto Transfer Schemas
 class CryptoTransferCreate(BaseModel):
     to_email: Optional[EmailStr] = None
-    to_user_id: Optional[str] = None
+    to_user_id: Optional[Union[str, int]] = None
     crypto_type: CryptoType
     amount: Decimal
 
@@ -989,13 +989,11 @@ class CryptoTransferCreate(BaseModel):
 
     @model_validator(mode="after")
     def either_email_or_user_id(self):
-        # self is the model instance
         if not self.to_email and not self.to_user_id:
             raise ValueError('Either to_email or to_user_id must be provided')
         if self.to_email and self.to_user_id:
             raise ValueError('Provide either to_email or to_user_id, not both')
         return self
-
 
 class CryptoTransferResponse(BaseModel):
     id: int
@@ -3716,6 +3714,7 @@ def create_withdrawal(
         transaction_hash=new_withdrawal.transaction_hash,
         created_at=new_withdrawal.created_at.isoformat(),  # ISO string
     )
+    
 
 @app.post("/api/transfers/create", response_model=CryptoTransferResponse)
 def create_transfer(
@@ -3725,13 +3724,20 @@ def create_transfer(
 ):
     """
     Create a crypto transfer between users.
+    Accepts either `to_email` or `to_user_id` (string or int).
     """
 
     # Validate recipient
     if transfer_data.to_email:
         recipient = db.query(User).filter(User.email == transfer_data.to_email).first()
+    elif transfer_data.to_user_id is not None:
+        try:
+            user_id_int = int(transfer_data.to_user_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid user ID")
+        recipient = db.query(User).filter(User.id == user_id_int).first()
     else:
-        recipient = db.query(User).filter(User.id == transfer_data.to_user_id).first()
+        raise HTTPException(status_code=422, detail="Recipient not provided")
 
     if not recipient:
         raise HTTPException(status_code=404, detail="Recipient not found")
@@ -3751,7 +3757,6 @@ def create_transfer(
             raise HTTPException(status_code=400, detail="Insufficient Bitcoin balance")
         current_user.bitcoin_balance -= transfer_data.amount
         recipient.bitcoin_balance += transfer_data.amount
-
         current_user.bitcoin_balance_usd = float(current_user.bitcoin_balance * rate)
         recipient.bitcoin_balance_usd = float(recipient.bitcoin_balance * rate)
         crypto_display = "Bitcoin"
@@ -3761,15 +3766,12 @@ def create_transfer(
             raise HTTPException(status_code=400, detail="Insufficient Ethereum balance")
         current_user.ethereum_balance -= transfer_data.amount
         recipient.ethereum_balance += transfer_data.amount
-
         current_user.ethereum_balance_usd = float(current_user.ethereum_balance * rate)
         recipient.ethereum_balance_usd = float(recipient.ethereum_balance * rate)
         crypto_display = "Ethereum"
 
     # Generate transaction hash
     tx_hash = str(uuid.uuid4())
-
-    # USD amount
     usd_amount = float(Decimal(transfer_data.amount) * rate)
 
     # Create transfer record
