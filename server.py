@@ -395,12 +395,12 @@ class CryptoTransfer(Base):
     __tablename__ = "crypto_transfers"
     
     id = Column(Integer, primary_key=True, index=True)
-    from_user_id = Column(Integer, ForeignKey("users.id"))
-    to_user_id = Column(Integer, ForeignKey("users.id"))
+    from_user_id = Column(String, ForeignKey("users.user_id"))  # <-- string now
+    to_user_id = Column(String, ForeignKey("users.user_id"))    # <-- string now
     crypto_type = Column(String, nullable=False)  # Bitcoin or Ethereum
     amount = Column(SQLDecimal(18, 8), nullable=False)
     usd_amount = Column(SQLDecimal(18, 2), nullable=False)  # store equivalent in USD
-    transaction_hash = Column(String, unique=True, index=True, nullable=False)  # ✅ unique reference
+    transaction_hash = Column(String, unique=True, index=True, nullable=False)  # unique reference
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     from_user = relationship("User", foreign_keys=[from_user_id], back_populates="sent_transfers")
