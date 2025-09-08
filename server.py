@@ -1005,6 +1005,7 @@ class CryptoTransferResponse(BaseModel):
     created_at: str
     from_user: BasicUserInfo
     to_user: BasicUserInfo
+    direction: str  # "sent" or "received"
 
     class Config:
         from_attributes = True
@@ -3812,7 +3813,8 @@ def get_user_transfers(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Fetch all crypto transfers involving the logged-in user.
+    Fetch all crypto transfers involving the logged-in user and mark
+    each as sent or received based on the current user.
     """
 
     transfers = (
@@ -3827,6 +3829,12 @@ def get_user_transfers(
 
     results = []
     for t in transfers:
+        # Determine direction
+        if t.from_user_id == current_user.id:
+            direction = "sent"
+        else:
+            direction = "received"
+
         results.append(
             CryptoTransferResponse(
                 id=t.id,
@@ -3845,6 +3853,7 @@ def get_user_transfers(
                     email=t.to_user.email,
                     name=t.to_user.name
                 ),
+                direction=direction  # new field indicating sent/received
             )
         )
 
