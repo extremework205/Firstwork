@@ -1721,28 +1721,42 @@ def verify_otp(otp_verify: OTPVerify, db: Session = Depends(get_db), request: Re
         logger.error(f"Error verifying OTP: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to verify OTP")
 
+
 @app.post("/api/change-password")
-async def change_password(request: PasswordChangeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def change_password(
+    request: Request,
+    body: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Change user password"""
     try:
         # Verify current password
-        if not verify_password(request.current_password, current_user.password_hash):
+        if not verify_password(body.current_password, current_user.password_hash):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
         
         # Hash new password
-        new_password_hash = get_password_hash(request.new_password)
+        new_password_hash = get_password_hash(body.new_password)
         
         # Update password
         current_user.password_hash = new_password_hash
         current_user.updated_at = datetime.utcnow()
         db.commit()
         
-        # Log security event
-        log_security_event(db, current_user.id, "password_changed", "Password changed successfully")
+        # Log security event with IP
+        log_security_event(
+            db, current_user.id, "password_changed",
+            "Password changed successfully",
+            request.client.host
+        )
         
         # Send notification email
-        await send_email_notification(current_user.email, "Password Changed", 
-                                       "Your password has been changed successfully.", db)
+        await send_email_notification(
+            current_user.email,
+            "Password Changed", 
+            "Your password has been changed successfully.",
+            db
+        )
         
         return {"message": "Password changed successfully"}
         
@@ -1750,24 +1764,34 @@ async def change_password(request: PasswordChangeRequest, current_user: User = D
         logger.error(f"Error changing password: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to change password")
 
+
 @app.post("/api/change-pin")
-async def change_pin(request: PinChangeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def change_pin(
+    request: Request,
+    body: PinChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Change user PIN"""
     try:
         # Verify current PIN
-        if not current_user.pin_hash or not verify_password(request.current_pin, current_user.pin_hash):
+        if not current_user.pin_hash or not verify_password(body.current_pin, current_user.pin_hash):
             raise HTTPException(status_code=400, detail="Current PIN is incorrect")
         
         # Hash new PIN
-        new_pin_hash = get_password_hash(request.new_pin)
+        new_pin_hash = get_password_hash(body.new_pin)
         
         # Update PIN
         current_user.pin_hash = new_pin_hash
         current_user.updated_at = datetime.utcnow()
         db.commit()
         
-        # Log security event
-        log_security_event(db, current_user.id, "pin_changed", "PIN changed successfully")
+        # Log security event with IP
+        log_security_event(
+            db, current_user.id, "pin_changed",
+            "PIN changed successfully",
+            request.client.host
+        )
         
         return {"message": "PIN changed successfully"}
         
