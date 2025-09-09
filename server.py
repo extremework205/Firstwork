@@ -1632,12 +1632,17 @@ async def get_security_stats(
         }
     }
 
+
 @app.post("/api/request-otp")
-def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
+def request_otp(
+    body: OTPRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
     """Request OTP for password reset, PIN reset, or account verification"""
     try:
         # Normalize email
-        email_normalized = request.email.strip().lower()
+        email_normalized = body.email.strip().lower()
 
         # Check if user exists
         user = db.query(User).filter(func.lower(User.email) == email_normalized).first()
@@ -1655,7 +1660,7 @@ def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
 
         # Delete old OTPs for this email & purpose
         db.query(OTP).filter(
-            and_(func.lower(OTP.email) == email_normalized, OTP.purpose == request.purpose)
+            and_(func.lower(OTP.email) == email_normalized, OTP.purpose == body.purpose)
         ).delete()
         db.commit()
 
@@ -1667,23 +1672,28 @@ def request_otp(request: OTPRequest, db: Session = Depends(get_db)):
         otp_record = OTP(
             email=email_normalized,
             otp_code=otp_code,
-            purpose=request.purpose,
+            purpose=body.purpose,
             expires_at=expires_at
         )
         db.add(otp_record)
         db.commit()
 
         # Send OTP email
-        email_service.send_otp_email(email_normalized, otp_code, request.purpose)
+        email_service.send_otp_email(email_normalized, otp_code, body.purpose)
 
-        # Log security event
-        log_security_event(db, user.id, "otp_requested", f"OTP requested for {request.purpose}")
+        # Log security event with IP
+        log_security_event(
+            db, user.id, "otp_requested",
+            f"OTP requested for {body.purpose}",
+            request.client.host
+        )
 
         return {"message": "OTP sent successfully", "expires_in": 600}
 
     except Exception as e:
         logger.error(f"Error requesting OTP: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to send OTP")
+        
 
 @app.post("/api/verify-otp")
 def verify_otp(otp_verify: OTPVerify, db: Session = Depends(get_db), request: Request = None):
@@ -1748,14 +1758,6 @@ async def change_password(
             db, current_user.id, "password_changed",
             "Password changed successfully",
             request.client.host
-        )
-        
-        # Send notification email
-        await send_email_notification(
-            current_user.email,
-            "Password Changed", 
-            "Your password has been changed successfully.",
-            db
         )
         
         return {"message": "Password changed successfully"}
