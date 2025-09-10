@@ -3152,36 +3152,7 @@ async def get_portfolio_analytics(
         asset_allocation=asset_allocation,
         growth_rate=growth_rate
     )
-
-# ---------------------
-# Admin Action Logging
-# ---------------------
-"""def log_admin_action(
-    db: Session,
-    admin_id: int,
-    action: str,
-    target_type: Optional[str] = None,
-    target_id: Optional[str] = None,
-    description: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    user_agent: Optional[str] = None,
-    before_value: Optional[str] = None,
-    after_value: Optional[str] = None
-):"""
-
-    audit_log = AdminAuditLog(
-        admin_id=admin_id,
-        action=action,
-        target_type=target_type,
-        target_id=target_id,
-        details=description,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        before_value=before_value,
-        after_value=after_value
-    )
-    db.add(audit_log)
-    db.commit()
+    
 
 # ---------------------
 # Transaction Logging
