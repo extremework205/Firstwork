@@ -267,14 +267,14 @@ class TransactionHistory(Base):
     
     user = relationship("User")
 
-class AdminAuditLog(Base):
-    __tablename__ = "admin_audit_logs"
+class AdminActionLog(Base):
+    __tablename__ = "admin_action_logs"
     
     id = Column(Integer, primary_key=True, index=True)
     admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     action = Column(String, nullable=False)
-    target_type = Column(String, nullable=True)  # user, deposit, settings, etc.
-    target_id = Column(String, nullable=True)
+    target_type = Column(String, nullable=True)  # e.g., user, deposit, settings, etc.
+    target_id = Column(String, nullable=True)    # ID of the affected record
     details = Column(Text, nullable=True)
     ip_address = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -810,6 +810,36 @@ def get_admin_user(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+def log_admin_action(
+    db,
+    admin_id: int,
+    action: str,
+    target_type: str = None,
+    target_id: str = None,
+    details: str = None,
+    request=None
+):
+    """
+    Logs an action performed by an admin user.
+    """
+    try:
+        ip_address = request.client.host if request else None
+
+        log_entry = AdminActionLog(
+            admin_id=admin_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            details=details,
+            ip_address=ip_address,
+            created_at=datetime.utcnow()
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[Admin Action Log Error] {str(e)}")
 
 
 # =============================================================================
