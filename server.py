@@ -214,6 +214,7 @@ class User(Base):
     is_suspended = Column(Boolean, default=False)
     mining_paused = Column(Boolean, default=False)
     withdrawal_suspended = Column(Boolean, default=False)
+    last_login = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
