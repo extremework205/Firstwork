@@ -23,7 +23,7 @@ import cloudinary
 import cloudinary.uploader
 
 # FastAPI and related imports
-from fastapi import FastAPI, Depends, WebSocket, HTTPException, status, Request, Query, Form, UploadFile, File
+from fastapi import FastAPI, Depends, WebSocket, HTTPException, status, Request, Query, Body, Form, UploadFile, File
 from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
