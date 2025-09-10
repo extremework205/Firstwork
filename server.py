@@ -3168,7 +3168,7 @@ async def get_portfolio_analytics(
     before_value: Optional[str] = None,
     after_value: Optional[str] = None
 ):"""
-    """Log admin actions for audit trail"""
+
     audit_log = AdminAuditLog(
         admin_id=admin_id,
         action=action,
