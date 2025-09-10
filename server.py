@@ -3156,7 +3156,7 @@ async def get_portfolio_analytics(
 # ---------------------
 # Admin Action Logging
 # ---------------------
-def log_admin_action(
+"""def log_admin_action(
     db: Session,
     admin_id: int,
     action: str,
@@ -3167,7 +3167,7 @@ def log_admin_action(
     user_agent: Optional[str] = None,
     before_value: Optional[str] = None,
     after_value: Optional[str] = None
-):
+):"""
     """Log admin actions for audit trail"""
     audit_log = AdminAuditLog(
         admin_id=admin_id,
