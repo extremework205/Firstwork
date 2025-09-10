@@ -4344,15 +4344,33 @@ def get_admin_logs(
     ]
 
 @app.get("/api/admin/dashboard/stats")
-def admin_dashboard_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def admin_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    # Total users
     total_users = db.query(User).count()
-    total_deposits = db.query(CryptoDeposit).with_entities(func.coalesce(func.sum(CryptoDeposit.amount), 0)).scalar()
-    total_crypto_distributed = db.query(CryptoTransfer).with_entities(func.coalesce(func.sum(CryptoTransfer.amount), 0)).scalar()
-    pending_withdrawals = db.query(CryptoTransfer).filter(CryptoTransfer.status == "pending").with_entities(func.coalesce(func.sum(CryptoTransfer.amount), 0)).scalar()
-    active_mining_sessions = db.query(MiningSession).filter(MiningSession.status == "active").count()
+
+    # Total confirmed deposits
+    total_deposits = db.query(CryptoDeposit) \
+        .filter(CryptoDeposit.status == "confirmed") \
+        .with_entities(func.coalesce(func.sum(CryptoDeposit.amount), 0)).scalar()
+
+    # Total crypto distributed via internal transfers
+    total_crypto_distributed = db.query(CryptoTransfer) \
+        .with_entities(func.coalesce(func.sum(CryptoTransfer.amount), 0)).scalar()
+
+    # Pending withdrawals
+    pending_withdrawals = db.query(Withdrawal) \
+        .filter(Withdrawal.status == "pending") \
+        .with_entities(func.coalesce(func.sum(Withdrawal.amount), 0)).scalar()
+
+    # Active mining sessions
+    active_mining_sessions = db.query(MiningSession) \
+        .filter(MiningSession.is_active == True).count()
 
     return {
         "total_users": total_users,
