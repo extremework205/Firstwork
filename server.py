@@ -213,6 +213,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_suspended = Column(Boolean, default=False)
     mining_paused = Column(Boolean, default=False)
+    withdrawal_suspended = Column(Boolean, default=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
