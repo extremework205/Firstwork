@@ -4342,6 +4342,79 @@ def get_admin_logs(
         for log in logs
     ]
 
+@app.get("/api/admin/dashboard/stats")
+def admin_dashboard_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    total_users = db.query(User).count()
+    total_deposits = db.query(CryptoDeposit).with_entities(func.coalesce(func.sum(CryptoDeposit.amount), 0)).scalar()
+    total_crypto_distributed = db.query(CryptoTransfer).with_entities(func.coalesce(func.sum(CryptoTransfer.amount), 0)).scalar()
+    pending_withdrawals = db.query(CryptoTransfer).filter(CryptoTransfer.status == "pending").with_entities(func.coalesce(func.sum(CryptoTransfer.amount), 0)).scalar()
+    active_mining_sessions = db.query(MiningSession).filter(MiningSession.status == "active").count()
+
+    return {
+        "total_users": total_users,
+        "total_deposits": float(total_deposits or 0),
+        "total_crypto_distributed": float(total_crypto_distributed or 0),
+        "pending_withdrawals": float(pending_withdrawals or 0),
+        "active_mining_sessions": active_mining_sessions,
+    }
+
+@app.get("/api/admin/settings")
+def get_admin_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        settings = AdminSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
+    return {
+        "bitcoin_rate_usd": float(settings.bitcoin_rate_usd),
+        "ethereum_rate_usd": float(settings.ethereum_rate_usd),
+        "global_mining_rate": settings.global_mining_rate,
+        "bitcoin_wallet_address": settings.bitcoin_wallet_address or "",
+        "ethereum_wallet_address": settings.ethereum_wallet_address or "",
+        "referral_reward_enabled": settings.referral_reward_enabled,
+        "referral_reward_type": settings.referral_reward_type,
+        "referral_reward_amount": float(settings.referral_reward_amount),
+        "referrer_reward_amount": float(settings.referrer_reward_amount),
+    }
+
+@app.put("/api/admin/settings")
+def update_admin_settings(data: dict = Body(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    settings = db.query(AdminSettings).first()
+    if not settings:
+        settings = AdminSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+
+    for field in [
+        "bitcoin_rate_usd",
+        "ethereum_rate_usd",
+        "global_mining_rate",
+        "bitcoin_wallet_address",
+        "ethereum_wallet_address",
+        "referral_reward_enabled",
+        "referral_reward_type",
+        "referral_reward_amount",
+        "referrer_reward_amount",
+    ]:
+        if field in data:
+            setattr(settings, field, data[field])
+
+    db.commit()
+    db.refresh(settings)
+    return {"message": "Settings updated successfully"}
+
 
 
 @app.get("/health")
