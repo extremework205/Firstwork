@@ -3886,6 +3886,297 @@ def get_user_transfers(
     return results
 
 
+# =======================
+# ADMIN USER MANAGEMENT
+# =======================
+
+# 1. Get all users
+@app.get("/api/admin/users")
+def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    users = db.query(User).all()
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "bitcoin_balance": u.bitcoin_balance,
+            "ethereum_balance": u.ethereum_balance,
+            "is_active": u.status == "active",
+            "is_suspended": u.is_suspended,
+            "mining_paused": u.mining_paused,
+            "withdrawal_suspended": u.withdrawal_suspended,
+            "created_at": u.created_at
+        }
+        for u in users
+    ]
+
+
+# 2. Search users
+@app.get("/api/admin/users/search")
+def search_users(q: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    users = db.query(User).filter(
+        or_(
+            User.email.ilike(f"%{q}%"),
+            User.name.ilike(f"%{q}%"),
+            User.user_id.ilike(f"%{q}%")
+        )
+    ).all()
+
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "bitcoin_balance": u.bitcoin_balance,
+            "ethereum_balance": u.ethereum_balance,
+            "is_active": u.status == "active",
+            "is_suspended": u.is_suspended,
+            "mining_paused": u.mining_paused,
+            "withdrawal_suspended": u.withdrawal_suspended,
+            "created_at": u.created_at
+        }
+        for u in users
+    ]
+
+
+# 3. Get user profile
+@app.get("/api/admin/users/{user_id}/profile")
+def get_user_profile(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # aggregate info
+    total_deposits = db.query(Deposit).filter(Deposit.user_id == user.id, Deposit.status == "confirmed").count()
+    total_withdrawals = db.query(Withdrawal).filter(Withdrawal.user_id == user.id, Withdrawal.status == "confirmed").count()
+    mining_sessions_count = db.query(MiningSession).filter(MiningSession.user_id == user.id).count()
+    referral_count = db.query(User).filter(User.referred_by_code == user.referral_code).count()
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "bitcoin_balance": user.bitcoin_balance,
+        "ethereum_balance": user.ethereum_balance,
+        "status": user.status,
+        "is_suspended": user.is_suspended,
+        "mining_paused": user.mining_paused,
+        "withdrawal_suspended": user.withdrawal_suspended,
+        "created_at": user.created_at,
+        "last_login": user.last_login,
+        "personal_mining_rate": user.personal_mining_rate,
+        "total_deposits": total_deposits,
+        "total_withdrawals": total_withdrawals,
+        "mining_sessions_count": mining_sessions_count,
+        "referral_count": referral_count
+    }
+
+
+# 4. Suspend user
+@app.put("/api/admin/users/{user_id}/suspend")
+def suspend_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_suspended = True
+    db.commit()
+
+    log_admin_action(db, current_user.email, "suspend_user", user.id, user.email, "User account suspended")
+
+    return {"message": f"User {user.email} suspended successfully"}
+
+
+# 5. Unsuspend user
+@app.put("/api/admin/users/{user_id}/unsuspend")
+def unsuspend_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_suspended = False
+    db.commit()
+
+    log_admin_action(db, current_user.email, "unsuspend_user", user.id, user.email, "User account unsuspended")
+
+    return {"message": f"User {user.email} unsuspended successfully"}
+
+
+# =======================
+# ADMIN USER ACTIONS
+# =======================
+
+# 6. Pause mining
+@app.put("/api/admin/users/{user_id}/pause-mining")
+def pause_mining(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.mining_paused = True
+    db.commit()
+
+    log_admin_action(db, current_user.email, "pause_mining", user.id, user.email, "Mining paused for user")
+
+    return {"message": f"Mining paused for {user.email}"}
+
+
+# 7. Resume mining
+@app.put("/api/admin/users/{user_id}/resume-mining")
+def resume_mining(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.mining_paused = False
+    db.commit()
+
+    log_admin_action(db, current_user.email, "resume_mining", user.id, user.email, "Mining resumed for user")
+
+    return {"message": f"Mining resumed for {user.email}"}
+
+
+# 8. Suspend withdrawals
+@app.put("/api/admin/users/{user_id}/suspend-withdrawals")
+def suspend_withdrawals(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.withdrawal_suspended = True
+    db.commit()
+
+    log_admin_action(db, current_user.email, "suspend_withdrawals", user.id, user.email, "Withdrawals suspended for user")
+
+    return {"message": f"Withdrawals suspended for {user.email}"}
+
+
+# 9. Enable withdrawals
+@app.put("/api/admin/users/{user_id}/enable-withdrawals")
+def enable_withdrawals(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.withdrawal_suspended = False
+    db.commit()
+
+    log_admin_action(db, current_user.email, "enable_withdrawals", user.id, user.email, "Withdrawals enabled for user")
+
+    return {"message": f"Withdrawals enabled for {user.email}"}
+
+
+# 10. Reset password (admin action)
+@app.put("/api/admin/users/{user_id}/reset-password")
+def admin_reset_password(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Generate a temporary random password
+    import secrets
+    import string
+    temp_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+    user.password_hash = hash_password(temp_password)
+    db.commit()
+
+    log_admin_action(db, current_user.email, "reset_password", user.id, user.email, "Password reset by admin")
+
+    return {"message": f"Password reset successfully for {user.email}", "temporary_password": temp_password}
+
+
+# 11. Set personal mining rate
+@app.put("/api/admin/users/{user_id}/set-mining-rate")
+def set_personal_mining_rate(user_id: int, body: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    rate = body.get("mining_rate")
+    if rate is None or not (0 <= rate <= 1):
+        raise HTTPException(status_code=400, detail="Invalid mining rate. Must be between 0.0 and 1.0")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.personal_mining_rate = rate
+    db.commit()
+
+    log_admin_action(db, current_user.email, "set_mining_rate", user.id, user.email, f"Set personal mining rate: {rate}")
+
+    return {"message": f"Mining rate set for {user.email}", "rate": rate}
+
+
+# 12. Clear personal mining rate (use global)
+@app.put("/api/admin/users/{user_id}/clear-mining-rate")
+def clear_personal_mining_rate(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.personal_mining_rate = None
+    db.commit()
+
+    log_admin_action(db, current_user.email, "clear_mining_rate", user.id, user.email, "Cleared personal mining rate")
+
+    return {"message": f"Personal mining rate cleared for {user.email}"}
+
+
+# 13. View transaction/admin logs
+@app.get("/api/admin/logs/transactions")
+def get_admin_logs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    logs = db.query(AdminActionLog).order_by(AdminActionLog.created_at.desc()).all()
+
+    return [
+        {
+            "id": log.id,
+            "admin_email": log.admin_email,
+            "action": log.action,
+            "target_user_id": log.target_user_id,
+            "target_user_email": log.target_user_email,
+            "details": log.details,
+            "created_at": log.created_at
+        }
+        for log in logs
+    ]
+
+
 @app.get("/health")
 @app.head("/health")
 def health_check():
