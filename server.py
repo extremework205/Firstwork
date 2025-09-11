@@ -2381,7 +2381,8 @@ def get_pending_deposits(admin_user: User = Depends(get_admin_user), db: Session
             "user_email": d.user.email,
             "crypto_type": d.crypto_type,
             "amount": d.amount,
-            "transaction_hash": d.transaction_hash,
+            # Ensure transaction_hash is always a string
+            "transaction_hash": str(d.transaction_hash) if d.transaction_hash is not None else "",
             "created_at": d.created_at
         }
         for d in deposits
