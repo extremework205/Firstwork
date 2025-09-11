@@ -4376,7 +4376,10 @@ def admin_dashboard_stats(
     }
 
 @app.get("/api/admin/settings")
-def get_admin_settings(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_admin_settings_route(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Not authorized")
 
