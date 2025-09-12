@@ -2462,7 +2462,7 @@ async def confirm_deposit(
         )
         
         # Send confirmation email
-        await send_email_notification(
+        """await send_email_notification(
             email=user.email,
             subject="Deposit Confirmed - Mining Started!",
             template_type="deposit_confirmed",
@@ -2474,7 +2474,7 @@ async def confirm_deposit(
                 "deposit_id": deposit.id
             },
             db=db
-        )
+        )"""
         
     elif action == "reject":
         deposit.status = DepositStatus.REJECTED
