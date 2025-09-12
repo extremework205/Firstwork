@@ -2433,7 +2433,7 @@ async def confirm_deposit(
             crypto_type=deposit.crypto_type,
             deposited_amount=deposit.amount,
             mining_rate=mining_rate,
-            started_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
             is_active=True
         )
         db.add(mining_session)  # ✅ save mining session
