@@ -822,7 +822,7 @@ def log_admin_action(
     action: str,
     target_type: str = None,
     target_id: str = None,
-    details: str = None,
+    description: str = None,
     request=None
 ):
     """
@@ -836,7 +836,7 @@ def log_admin_action(
             action=action,
             target_type=target_type,
             target_id=target_id,
-            details=details,
+            description=description,
             ip_address=ip_address,
             created_at=datetime.utcnow()
         )
