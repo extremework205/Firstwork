@@ -822,7 +822,7 @@ def log_admin_action(
     action: str,
     target_type: str = None,
     target_id: str = None,
-    description: str = None,
+    details: str = None,
     request=None
 ):
     """
@@ -836,7 +836,7 @@ def log_admin_action(
             action=action,
             target_type=target_type,
             target_id=target_id,
-            description=description,
+            details=details,
             ip_address=ip_address,
             created_at=datetime.utcnow()
         )
@@ -2456,7 +2456,7 @@ async def confirm_deposit(
             action="confirm_deposit",
             target_type="deposit",
             target_id=str(deposit.id),
-            description=f"Confirmed {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
+            details=f"Confirmed {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
             ip_address=request.client.host,
             user_agent=request.headers.get("user-agent", "")
         )
@@ -2487,7 +2487,7 @@ async def confirm_deposit(
             action="reject_deposit",
             target_type="deposit",
             target_id=str(deposit.id),
-            description=f"Rejected {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
+            details=f"Rejected {deposit.crypto_type} deposit of {deposit.amount} for user {user.email}",
             ip_address=request.client.host,
             user_agent=request.headers.get("user-agent", "")
         )
