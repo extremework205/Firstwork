@@ -297,6 +297,7 @@ class AdminActionLog(Base):
     target_id = Column(String, nullable=True)           # ID of the affected entity
     details = Column(String, nullable=True)             # Extra info
     ip_address = Column(String, nullable=True)          # IP of the admin
+    user_agent = Column(String, nullable=True)          # ✅ Browser/device info
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationship back to User
@@ -840,14 +841,13 @@ def log_admin_action(
     target_type: str = None,
     target_id: str = None,
     details: str = None,
-    request=None
+    ip_address: str = None,
+    user_agent: str = None
 ):
     """
     Logs an action performed by an admin user.
     """
     try:
-        ip_address = request.client.host if request else None
-
         log_entry = AdminActionLog(
             admin_id=admin_id,
             action=action,
@@ -855,6 +855,7 @@ def log_admin_action(
             target_id=target_id,
             details=details,
             ip_address=ip_address,
+            user_agent=user_agent,
             created_at=datetime.utcnow()
         )
         db.add(log_entry)
@@ -862,6 +863,7 @@ def log_admin_action(
     except Exception as e:
         db.rollback()
         print(f"[Admin Action Log Error] {str(e)}")
+
 
 
 # =============================================================================
