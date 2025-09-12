@@ -3909,7 +3909,7 @@ def get_user_transfers(
         )
 
     return results
-
+    
 
 @app.get("/api/admin/users")
 def get_all_users(
@@ -3922,13 +3922,18 @@ def get_all_users(
 
     users = db.query(User).all()
 
+    # Extract IP + User-Agent before logging
+    ip_address = request.client.host if request else None
+    user_agent = request.headers.get("user-agent") if request else None
+
     log_admin_action(
-        db,
+        db=db,
         admin_id=current_user.id,
         action="get_all_users",
-        target_type="user",
+        target_type="User",
         details="Fetched all users",
-        request=request
+        ip_address=ip_address,
+        user_agent=user_agent
     )
 
     return [
