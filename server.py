@@ -227,6 +227,7 @@ class User(Base):
     deposits = relationship("CryptoDeposit", back_populates="user", foreign_keys="CryptoDeposit.user_id")
     confirmed_deposits = relationship("CryptoDeposit", back_populates="confirmed_by_user", foreign_keys="CryptoDeposit.confirmed_by")
     mining_sessions = relationship("MiningSession", back_populates="user")
+    admin_logs = relationship("AdminActionLog", back_populates="admin")
 
 class ReferralReward(Base):
     __tablename__ = "referral_rewards"
@@ -284,6 +285,22 @@ class AdminAuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     admin = relationship("User")
+
+
+class AdminActionLog(Base):
+    __tablename__ = "admin_action_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String, nullable=False)             # e.g. "Deleted User", "Approved Agent"
+    target_type = Column(String, nullable=True)         # e.g. "User", "Survey", "Reward"
+    target_id = Column(String, nullable=True)           # ID of the affected entity
+    details = Column(String, nullable=True)             # Extra info
+    ip_address = Column(String, nullable=True)          # IP of the admin
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship back to User
+    admin = relationship("User", back_populates="admin_logs")
 
 class CryptoDeposit(Base):
     __tablename__ = "crypto_deposits"
