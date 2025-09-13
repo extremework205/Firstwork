@@ -4460,6 +4460,93 @@ def update_admin_settings(data: dict = Body(...), db: Session = Depends(get_db),
     db.commit()
     db.refresh(settings)
     return {"message": "Settings updated successfully"}
+
+
+@app.get("/api/admin/withdrawals/pending")
+def get_pending_withdrawals(admin_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    """Get all pending withdrawals for admin confirmation"""
+    withdrawals = db.query(Withdrawal).options(joinedload(Withdrawal.user)).filter(
+        Withdrawal.status == "pending"
+    ).order_by(Withdrawal.created_at.desc()).all()
+    
+    return [
+        {
+            "id": w.id,
+            "user_email": w.user.email,
+            "crypto_type": w.crypto_type,
+            "amount": w.amount,
+            "wallet_address": w.wallet_address,
+            "transaction_hash": str(w.transaction_hash) if w.transaction_hash else "",
+            "created_at": w.created_at
+        }
+        for w in withdrawals
+    ]
+
+@app.put("/api/admin/withdrawals/{withdrawal_id}/confirm")
+async def confirm_withdrawal(
+    withdrawal_id: int,
+    request: Request,
+    action: str = Query(..., regex="^(confirm|reject)$"),  # strictly confirm or reject
+    admin_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Confirm or reject a withdrawal"""
+    withdrawal = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).first()
+    if not withdrawal:
+        raise HTTPException(status_code=404, detail="Withdrawal not found")
+    
+    user = db.query(User).filter(User.id == withdrawal.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if action == "confirm":
+        withdrawal.status = "confirmed"
+        withdrawal.processed_at = datetime.utcnow()
+
+        # Log admin action
+        log_admin_action(
+            db=db,
+            admin_id=admin_user.id,
+            action="confirm_withdrawal",
+            target_type="withdrawal",
+            target_id=str(withdrawal.id),
+            details=f"Approved withdrawal of {withdrawal.amount} {withdrawal.crypto_type} for user {user.email}",
+            ip_address=request.client.host,
+            user_agent=request.headers.get("user-agent", "")
+        )
+        
+        # Optionally: trigger blockchain processing / send email
+        # await send_email_notification(...)
+        
+    elif action == "reject":
+        withdrawal.status = "rejected"
+        withdrawal.processed_at = datetime.utcnow()
+
+        # Refund user balance
+        if withdrawal.crypto_type.lower() == "bitcoin":
+            user.bitcoin_balance += withdrawal.amount
+        else:
+            user.ethereum_balance += withdrawal.amount
+        
+        db.add(user)
+
+        # Log admin action
+        log_admin_action(
+            db=db,
+            admin_id=admin_user.id,
+            action="reject_withdrawal",
+            target_type="withdrawal",
+            target_id=str(withdrawal.id),
+            details=f"Rejected withdrawal of {withdrawal.amount} {withdrawal.crypto_type} for user {user.email}",
+            ip_address=request.client.host,
+            user_agent=request.headers.get("user-agent", "")
+        )
+
+    db.add(withdrawal)
+    db.commit()
+    db.refresh(withdrawal)
+    
+    return {"message": f"Withdrawal {action}ed successfully"}
     
 
 
