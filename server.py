@@ -842,12 +842,17 @@ def log_admin_action(
     target_id: str = None,
     details: str = None,
     ip_address: str = None,
-    user_agent: str = None
+    user_agent: str = None,
+    request: Request = None  # new optional param
 ):
     """
     Logs an action performed by an admin user.
     """
     try:
+        if request:
+            ip_address = request.client.host
+            user_agent = request.headers.get("user-agent")
+
         log_entry = AdminActionLog(
             admin_id=admin_id,
             action=action,
