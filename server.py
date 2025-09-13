@@ -4014,7 +4014,7 @@ def get_user_profile(
         raise HTTPException(status_code=404, detail="User not found")
 
     # aggregate info
-    total_deposits = db.query(Deposit).filter(Deposit.user_id == user.id, Deposit.status == "confirmed").count()
+    total_deposits = db.query(CryptoDeposit).filter(CryptoDeposit.user_id == user.id, CryptoDeposit.status == "confirmed").count()
     total_withdrawals = db.query(Withdrawal).filter(Withdrawal.user_id == user.id, Withdrawal.status == "confirmed").count()
     mining_sessions_count = db.query(MiningSession).filter(MiningSession.user_id == user.id).count()
     referral_count = db.query(User).filter(User.referred_by_code == user.referral_code).count()
