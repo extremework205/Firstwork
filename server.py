@@ -4471,7 +4471,7 @@ def get_pending_withdrawals(
     withdrawals = (
         db.query(Withdrawal)
         .options(joinedload(Withdrawal.user))  # eager load user
-        .filter(Withdrawal.status == WithdrawalStatus.PENDING)
+        .filter(Withdrawal.status == WithdrawalStatus.PENDING.value)  # ✅ use .value
         .order_by(Withdrawal.created_at.desc())
         .all()
     )
@@ -4481,7 +4481,7 @@ def get_pending_withdrawals(
             "id": w.id,
             "user_email": w.user.email if w.user else None,
             "crypto_type": w.crypto_type,
-            "amount": w.amount,
+            "amount": float(w.amount),  # cast for safety in JSON
             "wallet_address": w.wallet_address,
             "transaction_hash": str(w.transaction_hash) if w.transaction_hash else "",
             "status": w.status,
@@ -4495,7 +4495,7 @@ def get_pending_withdrawals(
 async def confirm_withdrawal(
     withdrawal_id: int,
     request: Request,
-    action: str = Query(..., regex="^(confirm|reject)$"),  # strictly confirm or reject
+    action: str = Query(..., pattern="^(confirm|reject)$"),  # strictly confirm or reject
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
@@ -4504,13 +4504,15 @@ async def confirm_withdrawal(
     if not withdrawal:
         raise HTTPException(status_code=404, detail="Withdrawal not found")
     
+    if withdrawal.status != "pending":
+        raise HTTPException(status_code=400, detail="Withdrawal already processed")
+    
     user = db.query(User).filter(User.id == withdrawal.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     if action == "confirm":
-        # match enum instead of using wrong string
-        withdrawal.status = WithdrawalStatus.APPROVED
+        withdrawal.status = "approved"
         withdrawal.processed_at = datetime.utcnow()
 
         log_admin_action(
@@ -4525,7 +4527,7 @@ async def confirm_withdrawal(
         )
         
     elif action == "reject":
-        withdrawal.status = WithdrawalStatus.REJECTED
+        withdrawal.status = "rejected"
         withdrawal.processed_at = datetime.utcnow()
 
         # Refund user balance
@@ -4550,7 +4552,11 @@ async def confirm_withdrawal(
     db.commit()
     db.refresh(withdrawal)
     
-    return {"message": f"Withdrawal {action}ed successfully"}
+    return {
+        "message": f"Withdrawal {action}ed successfully",
+        "withdrawal_id": withdrawal.id,
+        "status": withdrawal.status
+    }
     
 
 
