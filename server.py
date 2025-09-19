@@ -3477,7 +3477,7 @@ def delete_qr_code(
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
-    """Delete a QR code for a specific crypto (bitcoin/ethereum)"""
+    """Delete a QR code URL for a specific crypto (bitcoin/ethereum)"""
 
     crypto_type = crypto_type.lower()
     if crypto_type not in ["bitcoin", "ethereum"]:
@@ -3485,19 +3485,11 @@ def delete_qr_code(
 
     settings = get_or_create_admin_settings(db)
 
-    # Select which field to clear
+    # Clear the field in DB
     if crypto_type == "bitcoin":
-        file_path = settings.bitcoin_deposit_qr
         settings.bitcoin_deposit_qr = None
     else:
-        file_path = settings.ethereum_deposit_qr
         settings.ethereum_deposit_qr = None
-
-    # Delete file from filesystem if it exists
-    import os
-    if file_path and file_path.startswith("uploads/"):
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
     db.commit()
     db.refresh(settings)
@@ -3509,7 +3501,7 @@ def delete_qr_code(
         action=f"delete_qr_code_{crypto_type}",
         target_type="admin_settings",
         target_id=crypto_type,
-        details=f"Deleted {crypto_type} QR code"
+        details=f"Deleted {crypto_type} QR code URL"
     )
 
     return {"message": f"{crypto_type.capitalize()} QR code deleted successfully"}
@@ -3518,49 +3510,33 @@ def delete_qr_code(
 @app.post("/api/admin/upload-qr-code")
 async def upload_qr_code(
     crypto_type: str = Form(...),
-    qr_file: UploadFile = File(...),
+    qr_code_url: str = Form(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None
-):
+    request: Request = None):
     # ✅ Ensure admin access
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
-
+    
     # ✅ Validate crypto type
     crypto_type = crypto_type.lower()
     if crypto_type not in ["bitcoin", "ethereum"]:
         raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
-
-    # ✅ Validate file type
-    if not qr_file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
-
-    # ✅ Read file content
-    file_content = await qr_file.read()
-    if len(file_content) > 5 * 1024 * 1024:  # 5 MB max
-        raise HTTPException(status_code=400, detail="File size too large. Maximum 5MB allowed")
-
-    # ✅ Save file locally
-    file_extension = qr_file.filename.split(".")[-1] if "." in qr_file.filename else "png"
-    filename = f"qr_{crypto_type}_{int(time.time())}.{file_extension}"
-    file_path = f"uploads/qr_codes/{filename}"
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-    with open(file_path, "wb") as buffer:
-        buffer.write(file_content)
-
+    
+    # ✅ Validate URL format
+    if not qr_code_url or not qr_code_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid URL format. Must start with http:// or https://")
+    
     # ✅ Update AdminSettings
     settings = get_or_create_admin_settings(db)
-
     if crypto_type == "bitcoin":
-        settings.bitcoin_deposit_qr = file_path
+        settings.bitcoin_deposit_qr = qr_code_url
     else:
-        settings.ethereum_deposit_qr = file_path
-
+        settings.ethereum_deposit_qr = qr_code_url
+    
     db.commit()
     db.refresh(settings)
-
+    
     # ✅ Log admin action
     log_admin_action(
         db=db,
@@ -3568,15 +3544,15 @@ async def upload_qr_code(
         action="upload_qr_code",
         target_type="admin_settings",
         target_id=crypto_type,
-        details=f"Uploaded {crypto_type} QR code",
+        details=f"Updated {crypto_type} QR code URL",
     )
-
+    
     return {
         "success": True,
-        "message": f"QR code uploaded successfully for {crypto_type}",
+        "message": f"QR code URL updated successfully for {crypto_type}",
         "data": {
             "crypto_type": crypto_type,
-            "qr_code_url": file_path
+            "qr_code_url": qr_code_url
         }
     }
 
