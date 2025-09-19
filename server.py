@@ -3389,7 +3389,7 @@ async def get_user_transaction_summary(
     }
     
 
-@app.post("/api/admin/upload-qr-code")
+"""@app.post("/api/admin/upload-qr-code")
 async def upload_qr_code(
     crypto_type: str = Form(...),
     wallet_address: str = Form(...),
@@ -3397,16 +3397,13 @@ async def upload_qr_code(
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
-    """Upload QR code image for Bitcoin or Ethereum deposits"""
     if crypto_type not in ["bitcoin", "ethereum"]:
         raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
     
-    # Validate file type
     allowed_types = ["image/jpeg", "image/png", "image/gif"]
     if qr_file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only image files (JPEG, PNG, GIF) are allowed")
     
-    # Save QR code file
     import os
     import uuid
     
@@ -3423,7 +3420,6 @@ async def upload_qr_code(
     
     qr_code_url = f"/uploads/qr_codes/{unique_filename}"
     
-    # Update admin settings with new QR code and wallet address
     settings = get_or_create_admin_settings(db)
     if crypto_type == "bitcoin":
         settings.bitcoin_deposit_qr = qr_code_url
@@ -3434,7 +3430,6 @@ async def upload_qr_code(
     
     db.commit()
     
-    # Log admin action
     log_admin_action(
         db=db,
         admin_id=admin_user.id,
@@ -3448,23 +3443,26 @@ async def upload_qr_code(
         "message": f"{crypto_type.title()} QR code uploaded successfully",
         "qr_code_url": qr_code_url,
         "wallet_address": wallet_address
-    }
+    }"""
 
 @app.get("/api/admin/qr-codes")
-def get_all_qr_codes(admin_user: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+def get_all_qr_codes(
+    admin_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
     """Get all QR codes for admin management"""
-    qr_codes = db.query(DepositQRCode).order_by(DepositQRCode.created_at.desc()).all()
-    
+
+    settings = get_or_create_admin_settings(db)
+
     return [
         {
-            "id": qr.id,
-            "crypto_type": qr.crypto_type,
-            "qr_code_url": qr.qr_code_url,
-            "wallet_address": qr.wallet_address,
-            "is_active": qr.is_active,
-            "created_at": qr.created_at
+            "crypto_type": "bitcoin",
+            "qr_code_url": settings.bitcoin_deposit_qr,
+        },
+        {
+            "crypto_type": "ethereum",
+            "qr_code_url": settings.ethereum_deposit_qr,
         }
-        for qr in qr_codes
     ]
 
 
@@ -3473,114 +3471,114 @@ def get_all_qr_codes(admin_user: User = Depends(get_admin_user), db: Session = D
 def root():
     return {"message": "Server is running"}
 
-@app.delete("/api/admin/qr-codes/{qr_id}")
+@app.delete("/api/admin/qr-codes/{crypto_type}")
 def delete_qr_code(
-    qr_id: int,
+    crypto_type: str,
     admin_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
-    """Delete a QR code"""
-    qr_code = db.query(DepositQRCode).filter(DepositQRCode.id == qr_id).first()
-    if not qr_code:
-        raise HTTPException(status_code=404, detail="QR code not found")
-    
-    # Delete file from filesystem
+    """Delete a QR code for a specific crypto (bitcoin/ethereum)"""
+
+    crypto_type = crypto_type.lower()
+    if crypto_type not in ["bitcoin", "ethereum"]:
+        raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
+
+    settings = get_or_create_admin_settings(db)
+
+    # Select which field to clear
+    if crypto_type == "bitcoin":
+        file_path = settings.bitcoin_deposit_qr
+        settings.bitcoin_deposit_qr = None
+    else:
+        file_path = settings.ethereum_deposit_qr
+        settings.ethereum_deposit_qr = None
+
+    # Delete file from filesystem if it exists
     import os
-    if qr_code.qr_code_url.startswith("/uploads/"):
-        file_path = qr_code.qr_code_url[1:]  # Remove leading slash
+    if file_path and file_path.startswith("uploads/"):
         if os.path.exists(file_path):
             os.remove(file_path)
-    
+
+    db.commit()
+    db.refresh(settings)
+
     # Log admin action
     log_admin_action(
         db=db,
         admin_id=admin_user.id,
-        action=f"delete_qr_code_{qr_code.crypto_type}",
-        target_type="qr_code",
-        target_id=str(qr_id),
-        details=f"Deleted {qr_code.crypto_type} QR code"
+        action=f"delete_qr_code_{crypto_type}",
+        target_type="admin_settings",
+        target_id=crypto_type,
+        details=f"Deleted {crypto_type} QR code"
     )
-    
-    db.delete(qr_code)
-    db.commit()
-    
-    return {"message": "QR code deleted successfully"}
+
+    return {"message": f"{crypto_type.capitalize()} QR code deleted successfully"}
 
 # Mount static files for serving uploaded images
 @app.post("/api/admin/upload-qr-code")
 async def upload_qr_code(
     crypto_type: str = Form(...),
-    wallet_address: str = Form(...),
     qr_file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None
 ):
-    try:
-        # Check if user is admin
-        if not current_user.is_admin:
-            raise HTTPException(status_code=403, detail="Admin access required")
-        
-        # Validate crypto type
-        if crypto_type.lower() not in ['bitcoin', 'ethereum']:
-            raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
-        
-        # Validate file type
-        if not qr_file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read file content
-        file_content = await qr_file.read()
-        if len(file_content) > 5 * 1024 * 1024:  # 5MB limit
-            raise HTTPException(status_code=400, detail="File size too large. Maximum 5MB allowed")
-        
-        # Save file to blob storage or local storage
-        file_extension = qr_file.filename.split('.')[-1] if '.' in qr_file.filename else 'png'
-        filename = f"qr_{crypto_type}_{int(time.time())}.{file_extension}"
-        file_path = f"uploads/qr_codes/{filename}"
-        
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_content)
-        
-        # Update or create QR code record in database
-        db.query(DepositQRCode).filter(DepositQRCode.crypto_type == crypto_type.lower()).delete()
-        db.commit()
+    # ✅ Ensure admin access
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
 
-        qr_code = DepositQRCode(
-            crypto_type=crypto_type.lower(),
-            wallet_address=wallet_address,
-            qr_code_url=file_path,
-            is_active=True
-        )
+    # ✅ Validate crypto type
+    crypto_type = crypto_type.lower()
+    if crypto_type not in ["bitcoin", "ethereum"]:
+        raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
 
-        db.add(qr_code)
-        db.commit()
-        
-        # Log admin activity
-        log_activity(
-            db, current_user.id,
-            action="qr_code_upload",
-            details=f"Uploaded QR code for {crypto_type} - {wallet_address}",
-            ip_address=request.client.host if hasattr(request, 'client') else None
-        )
-        
-        return {
-            "success": True,
-            "message": f"QR code uploaded successfully for {crypto_type}",
-            "data": {
-                "crypto_type": crypto_type,
-                "wallet_address": wallet_address,
-                "file_path": file_path
-            }
+    # ✅ Validate file type
+    if not qr_file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+
+    # ✅ Read file content
+    file_content = await qr_file.read()
+    if len(file_content) > 5 * 1024 * 1024:  # 5 MB max
+        raise HTTPException(status_code=400, detail="File size too large. Maximum 5MB allowed")
+
+    # ✅ Save file locally
+    file_extension = qr_file.filename.split(".")[-1] if "." in qr_file.filename else "png"
+    filename = f"qr_{crypto_type}_{int(time.time())}.{file_extension}"
+    file_path = f"uploads/qr_codes/{filename}"
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(file_content)
+
+    # ✅ Update AdminSettings
+    settings = get_or_create_admin_settings(db)
+
+    if crypto_type == "bitcoin":
+        settings.bitcoin_deposit_qr = file_path
+    else:
+        settings.ethereum_deposit_qr = file_path
+
+    db.commit()
+    db.refresh(settings)
+
+    # ✅ Log admin action
+    log_admin_action(
+        db=db,
+        admin_id=current_user.id,
+        action="upload_qr_code",
+        target_type="admin_settings",
+        target_id=crypto_type,
+        details=f"Uploaded {crypto_type} QR code",
+    )
+
+    return {
+        "success": True,
+        "message": f"QR code uploaded successfully for {crypto_type}",
+        "data": {
+            "crypto_type": crypto_type,
+            "qr_code_url": file_path
         }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading QR code: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    }
 
 
 @app.get("/api/user/profile", response_model=UserResponse)
