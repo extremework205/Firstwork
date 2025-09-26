@@ -67,9 +67,6 @@ logger = logging.getLogger("uvicorn.error")
 required_env_vars = [
     "DATABASE_URL",
     "SECRET_KEY",
-    "SMTP_SERVER",
-    "SMTP_USERNAME",
-    "SMTP_PASSWORD",
     "FROM_EMAIL",
     "FROM_NAME",
     "BASE_URL",
@@ -77,14 +74,17 @@ required_env_vars = [
     "ADMIN_EMAIL",
     "ADMIN_PASSWORD",
     "ADMIN_PIN",
-    "APP_SECRET"
+    "APP_SECRET",
+    "EMAIL_API_URL",        # URL of the serverless email function
+    "EMAIL_API_AUTH_TOKEN"  # Token to authorize backend requests
 ]
 
 missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
-# Database Configuration
+
+# Database & Security
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
@@ -94,16 +94,20 @@ MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION_MINUTES = 30
 RATE_LIMIT_STORAGE = defaultdict(list)
 
-SMTP_SERVER = os.getenv("SMTP_SERVER")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USERNAME)
-FROM_NAME = os.getenv("FROM_NAME")
-BASE_URL = os.getenv("BASE_URL")
-APP_SECRET = os.getenv("APP_SECRET")
-FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL")
+# Email Configuration (Serverless API)
+EMAIL_API_URL = os.getenv("EMAIL_API_URL")  # URL of your serverless email function
+EMAIL_API_AUTH_TOKEN = os.getenv("EMAIL_API_AUTH_TOKEN")  # Token to authorize backend requests
+FROM_EMAIL = os.getenv("FROM_EMAIL")  # Default sender email
+FROM_NAME = os.getenv("FROM_NAME")    # Default sender name
 
+# Base URLs
+BASE_URL = os.getenv("BASE_URL")  # Backend URL
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL")  # Frontend URL
+
+# App Secrets
+APP_SECRET = os.getenv("APP_SECRET")
+
+# Admin Credentials
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ADMIN_PIN = os.getenv("ADMIN_PIN")
@@ -476,10 +480,8 @@ class UserApproval(Base):
 
 class EmailService:
     def __init__(self):
-        self.smtp_server = SMTP_SERVER
-        self.smtp_port = SMTP_PORT
-        self.smtp_username = SMTP_USERNAME
-        self.smtp_password = SMTP_PASSWORD
+        self.api_url = EMAIL_API_URL  # e.g., https://your-serverless-function.com/send-email
+        self.api_token = EMAIL_API_AUTH_TOKEN  # Bearer token for authorization
         self.from_email = FROM_EMAIL
         self.from_name = FROM_NAME
 
@@ -487,27 +489,20 @@ class EmailService:
     async def upload_to_cloud(file: UploadFile, public_id: str = None) -> str:
         """
         Uploads a file to Cloudinary and returns the file URL.
-        
-        Args:
-            file: FastAPI UploadFile
-            public_id: Optional custom name for the file in Cloudinary
-
-        Returns:
-            str: URL of the uploaded file
         """
-        # Read file bytes
         file_bytes = await file.read()
-
-        # Upload to Cloudinary
         result = cloudinary.uploader.upload(
             file_bytes,
-            resource_type="auto",  # automatically detects image, video, pdf, etc.
+            resource_type="auto",
             public_id=public_id,
             overwrite=True
         )
-
-        # Return secure URL
         return result.get("secure_url")
+
+    def _prepare_email_body(self, body: str, attachment_url: str = None):
+        if attachment_url:
+            body += f"<br><br>📎 Evidence File: <a href='{attachment_url}' target='_blank'>{attachment_url}</a>"
+        return body
 
     def send_email(
         self,
@@ -515,36 +510,34 @@ class EmailService:
         subject: str,
         body: str,
         is_html: bool = False,
-        attachment_url: str = None
-    ):
+        attachment_url: str = None,
+        text: str = None
+    ) -> bool:
+        """
+        Send email through serverless email API.
+        """
         try:
-            # Create the email message
-            msg = MIMEMultipart()
-            msg['From'] = formataddr((self.from_name, self.from_email))
-            msg['To'] = to_email
-            msg['Subject'] = subject
+            body = self._prepare_email_body(body, attachment_url)
+            
+            payload = {
+                "to": to_email,
+                "subject": subject,
+                "html": body,
+                "text": text or ""  # optional plain text
+            }
 
-            # Append attachment URL to body if provided
-            if attachment_url:
-                body += f"<br><br>📎 Evidence File: <a href='{attachment_url}' target='_blank'>{attachment_url}</a>"
+            headers = {
+                "Authorization": f"Bearer {self.api_token}"
+            }
 
-            msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
+            # Use httpx to POST to serverless API
+            response = httpx.post(self.api_url, json=payload, headers=headers, timeout=15)
 
-            # Send email via SSL or STARTTLS
-            if int(self.smtp_port) == 465:
-                # SSL mode
-                with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
-                    server.login(self.smtp_username, self.smtp_password)
-                    server.sendmail(self.from_email, to_email, msg.as_string())
+            if response.status_code == 200:
+                return True
             else:
-                # STARTTLS mode (common for port 587)
-                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                    server.ehlo()
-                    server.starttls()
-                    server.login(self.smtp_username, self.smtp_password)
-                    server.sendmail(self.from_email, to_email, msg.as_string())
-
-            return True
+                print(f"Failed to send email: {response.text}")
+                return False
 
         except Exception as e:
             print(f"Failed to send email: {e}")
