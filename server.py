@@ -1368,8 +1368,8 @@ async def login_user(
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 4️⃣ Suspended account check
-    if user.status == UserStatus.SUSPENDED:
+    # 4️⃣ Suspended account check (using boolean flag)
+    if user.is_suspended:
         log_security_event(
             db, user.id, "suspended_login_attempt",
             f"Login attempt by suspended user {user.email}",
