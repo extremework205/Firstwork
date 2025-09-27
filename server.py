@@ -58,9 +58,6 @@ from email.utils import formataddr
 from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from jinja2 import Environment, FileSystemLoader
 
-
-logger = logging.getLogger("uvicorn.error")
-
 # =============================================================================
 # CONFIGURATION & CONSTANTS
 # =============================================================================
