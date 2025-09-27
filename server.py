@@ -938,13 +938,6 @@ class UserLogin(BaseModel):
     ip_address: str = None
     user_agent: str = None
 
-class LoginWithTwoFA(BaseModel):
-    email: str
-    password: str
-    two_fa_token: Optional[str] = None
-    device_fingerprint: str = None
-    ip_address: str = None
-    user_agent: str = None
 
 class UserPinVerify(BaseModel):
     pin: str
@@ -1343,7 +1336,7 @@ app.add_middleware(
 @app.post("/api/login")
 async def login_user(
     request: Request,
-    user_login: LoginWithTwoFA,   # You can rename schema if 2FA fields are no longer needed
+    user_login: UserLogin,   # ✅ now using the non-2FA schema
     db: Session = Depends(get_db)
 ):
     # 1️⃣ Fetch user
