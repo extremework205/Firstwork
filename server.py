@@ -1368,7 +1368,7 @@ app.add_middleware(
 @app.post("/api/login")
 async def login_user(
     request: Request,
-    user_login: UserLogin,   # ✅ now using the non-2FA schema
+    user_login: UserLogin,  # Using the non-2FA schema
     db: Session = Depends(get_db)
 ):
     # 1️⃣ Fetch user
@@ -1393,7 +1393,7 @@ async def login_user(
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 4️⃣ Suspended account check (using boolean flag)
+    # 4️⃣ Suspended account check
     if user.is_suspended:
         log_security_event(
             db, user.id, "suspended_login_attempt",
@@ -1420,13 +1420,32 @@ async def login_user(
     db.add(login_attempt)
     db.commit()
 
-    # 6️⃣ Create access token
+    # 6️⃣ Send login alert email using template
+    try:
+        # Pass any variables your Jinja2 login template needs
+        template_vars = {
+            "user_name": user.name,
+            "login_ip": request.client.host,
+            "login_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "user_agent": request.headers.get("user-agent")
+        }
+        email_service.send_template_email(
+            to_email=user.email,
+            subject="New Login Alert",
+            template_name="login_alert.html",
+            template_vars=template_vars
+        )
+    except Exception as e:
+        # Just log error, don’t block login
+        print(f"Failed to send login alert email: {e}")
+
+    # 7️⃣ Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
 
-    # 7️⃣ Return response
+    # 8️⃣ Return response
     return {
         "access_token": access_token,
         "token_type": "bearer",
