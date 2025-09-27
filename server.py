@@ -480,16 +480,14 @@ class UserApproval(Base):
 
 class EmailService:
     def __init__(self):
-        self.api_url = EMAIL_API_URL  # e.g., https://your-serverless-function.com/send-email
-        self.api_token = EMAIL_API_AUTH_TOKEN  # Bearer token for authorization
+        self.api_url = EMAIL_API_URL  # e.g., your serverless email API
+        self.api_token = EMAIL_API_AUTH_TOKEN  # Bearer token
         self.from_email = FROM_EMAIL
         self.from_name = FROM_NAME
 
     @staticmethod
     async def upload_to_cloud(file: UploadFile, public_id: str = None) -> str:
-        """
-        Uploads a file to Cloudinary and returns the file URL.
-        """
+        """Uploads a file to Cloudinary and returns the secure URL."""
         file_bytes = await file.read()
         result = cloudinary.uploader.upload(
             file_bytes,
@@ -500,10 +498,12 @@ class EmailService:
         return result.get("secure_url")
 
     def _prepare_email_body(self, body: str, attachment_url: str = None):
+        """Attach evidence/attachment if provided."""
         if attachment_url:
-            body += f"<br><br>📎 Evidence File: <a href='{attachment_url}' target='_blank'>{attachment_url}</a>"
+            body += f"<br><br>📎 Attachment: <a href='{attachment_url}' target='_blank'>{attachment_url}</a>"
         return body
 
+    # === Original engine: main email sender ===
     def send_email(
         self,
         to_email: str,
@@ -514,23 +514,18 @@ class EmailService:
         text: str = None
     ) -> bool:
         """
-        Send email through serverless email API.
+        Send email through serverless API.
         """
         try:
             body = self._prepare_email_body(body, attachment_url)
-            
             payload = {
                 "to": to_email,
                 "subject": subject,
                 "html": body,
-                "text": text or ""  # optional plain text
+                "text": text or ""
             }
+            headers = {"Authorization": f"Bearer {self.api_token}"}
 
-            headers = {
-                "Authorization": f"Bearer {self.api_token}"
-            }
-
-            # Use httpx to POST to serverless API
             response = httpx.post(self.api_url, json=payload, headers=headers, timeout=15)
 
             if response.status_code == 200:
@@ -538,33 +533,73 @@ class EmailService:
             else:
                 print(f"Failed to send email: {response.text}")
                 return False
-
         except Exception as e:
             print(f"Failed to send email: {e}")
             return False
 
+    # === New general-purpose template-based sender ===
+    def send_template_email(
+        self,
+        to_email: str,
+        subject: str,
+        template_name: str,
+        template_vars: dict = None,
+        attachment_url: str = None
+    ) -> bool:
+        """
+        Send any Jinja2 template-based email alert.
+        Can be used for login alerts, deposit approval, withdrawal, transfers, password/pin changes, etc.
+        """
+        try:
+            template_vars = template_vars or {}
+            template = env.get_template(template_name)
+            body = template.render(**template_vars)
+            return self.send_email(
+                to_email=to_email,
+                subject=subject,
+                body=body,
+                is_html=True,
+                attachment_url=attachment_url
+            )
+        except Exception as e:
+            print(f"Failed to send template email: {e}")
+            return False
+
+    # === OTP email (uses template engine) ===
     def send_otp_email(self, to_email: str, otp_code: str, purpose: str):
         subject = f"Your OTP Code for {purpose.replace('_', ' ').title()}"
-        template = env.get_template('otp_email.html')
-        body = template.render(otp_code=otp_code, purpose=purpose)
-        return self.send_email(to_email, subject, body, is_html=True)
+        return self.send_template_email(
+            to_email=to_email,
+            subject=subject,
+            template_name="otp_email.html",
+            template_vars={"otp_code": otp_code, "purpose": purpose}
+        )
 
-    def send_agent_approval_email(self, agent_email: str, user_name: str, user_email: str, approval_token: str):
+    # === Agent approval email (uses template engine) ===
+    def send_agent_approval_email(
+        self, agent_email: str, user_name: str, user_email: str, approval_token: str
+    ):
         approve_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=approve"
         reject_url = f"{BASE_URL}/api/agent/approve/{approval_token}?action=reject"
 
         subject = "New User Approval Request"
-        template = env.get_template('agent_approval.html')
-        body = template.render(
-            user_name=user_name,
-            user_email=user_email,
-            approve_url=approve_url,
-            reject_url=reject_url
+        template_vars = {
+            "user_name": user_name,
+            "user_email": user_email,
+            "approve_url": approve_url,
+            "reject_url": reject_url
+        }
+        return self.send_template_email(
+            to_email=agent_email,
+            subject=subject,
+            template_name="agent_approval.html",
+            template_vars=template_vars
         )
-        return self.send_email(agent_email, subject, body, is_html=True)
+
 
 # Initialize email service
 email_service = EmailService()
+
 
 # =============================================================================
 # UTILITY FUNCTIONS (Defined before use)
