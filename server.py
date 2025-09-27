@@ -1341,28 +1341,15 @@ app.add_middleware(
 # =============================================================================
 
 @app.post("/api/login")
-@limiter.limit("5/minute")  # Rate limiting
 async def login_user(
     request: Request,
-    user_login: LoginWithTwoFA,
+    user_login: LoginWithTwoFA,   # You can rename schema if 2FA fields are no longer needed
     db: Session = Depends(get_db)
 ):
-    # 1️⃣ Check if account is locked
-    if is_account_locked(db, user_login.email):
-        log_security_event(
-            db, None, "blocked_login_attempt",
-            f"Login blocked for {user_login.email} - account locked",
-            request.client.host
-        )
-        raise HTTPException(
-            status_code=423,
-            detail="Account temporarily locked due to multiple failed attempts"
-        )
-
-    # 2️⃣ Fetch user
+    # 1️⃣ Fetch user
     user = db.query(User).filter(User.email == user_login.email).first()
 
-    # 3️⃣ Log login attempt
+    # 2️⃣ Log login attempt (default: failed until proven successful)
     login_attempt = LoginAttempt(
         email=user_login.email,
         ip_address=request.client.host,
@@ -1370,61 +1357,35 @@ async def login_user(
         user_agent=request.headers.get("user-agent")
     )
 
-    # 4️⃣ Verify credentials
+    # 3️⃣ Verify credentials
     if not user or not verify_password(user_login.password, user.password_hash):
         log_security_event(
             db, user.id if user else None, "failed_login",
             f"Failed login attempt for {user_login.email}",
             request.client.host
         )
-        if user:
-            user.failed_login_attempts += 1
-            user.last_failed_login = datetime.utcnow()
-            if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
-                user.account_locked = True
-                user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
-                log_security_event(
-                    db, user.id, "account_locked",
-                    f"Account locked for {user.email} due to {MAX_LOGIN_ATTEMPTS} failed attempts",
-                    request.client.host
-                )
         db.add(login_attempt)
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    # 5️⃣ Suspended account check
+    # 4️⃣ Suspended account check
     if user.status == UserStatus.SUSPENDED:
         log_security_event(
             db, user.id, "suspended_login_attempt",
             f"Login attempt by suspended user {user.email}",
             request.client.host
         )
+        db.add(login_attempt)
+        db.commit()
         raise HTTPException(status_code=403, detail="Account suspended")
 
-    # 6️⃣ Optional 2FA check (still verified if enabled)
-    if getattr(user, "two_fa_enabled", False) and user_login.two_fa_token:
-        if not verify_2fa_token(user.two_fa_secret, user_login.two_fa_token):
-            log_security_event(
-                db, user.id, "failed_2fa",
-                f"Failed 2FA verification for {user.email}",
-                request.client.host
-            )
-            user.failed_login_attempts += 1
-            db.commit()
-            raise HTTPException(status_code=400, detail="Invalid 2FA token")
-
-    # 7️⃣ Successful login - reset failed attempts
-    user.failed_login_attempts = 0
-    user.account_locked = False
-    user.locked_until = None
+    # 5️⃣ Successful login
     login_attempt.success = True
-
     log_activity(
         db, user.id, "USER_LOGIN",
         f"User logged in from {request.client.host}",
         request.client.host
     )
-
     log_security_event(
         db, user.id, "successful_login",
         f"Successful login for {user.email}",
@@ -1434,18 +1395,17 @@ async def login_user(
     db.add(login_attempt)
     db.commit()
 
-    # 8️⃣ Create access token
+    # 6️⃣ Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
 
-    # 9️⃣ Return response - always require PIN verification
+    # 7️⃣ Return response
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": UserResponse.from_orm(user),
-        "requires_2fa": getattr(user, "two_fa_enabled", False)  # optional for frontend 2FA UI
+        "user": UserResponse.from_orm(user)
     }
 
 @app.post("/api/security/2fa/setup", response_model=TwoFASetupResponse)
@@ -2476,6 +2436,14 @@ def mining_live_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # ⛔ Stop immediately if mining is paused for this user
+    if getattr(current_user, "mining_paused", False):
+        return {
+            "message": "Mining is paused for this user",
+            "total_mined": 0,
+            "sessions": []
+        }
+
     now = datetime.now(timezone.utc)
     total_mined = Decimal(0)
     sessions_data = []
@@ -3449,6 +3417,13 @@ def create_withdrawal(
     """
     Create a new withdrawal request for the logged-in user.
     """
+
+    # 🔒 Check if withdrawals are suspended for this user
+    if getattr(current_user, "withdrawal_suspended", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Withdrawals are currently suspended for your account. Please contact support."
+        )
 
     # Fetch admin settings for crypto rates
     admin_settings = db.query(AdminSettings).first()
