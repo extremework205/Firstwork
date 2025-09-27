@@ -928,36 +928,7 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
-
-
-
-"""class ConnectionManager:
-    def __init__(self):
-        self.active_connections: dict[int, WebSocket] = {}  # user_id -> websocket
-        self.mining_progress: dict[int, dict[int, Decimal]] = {}  # user_id -> {session_id: mined_amount}
-
-    async def connect(self, user_id: int, websocket: WebSocket):
-    
-        self.active_connections[user_id] = websocket
-        if user_id not in self.mining_progress:
-            self.mining_progress[user_id] = {}
-
-    async def disconnect(self, user_id: int):
-    
-        self.active_connections.pop(user_id, None)
-
-    async def send_personal_message(self, user_id: int, message: dict):
-    
-        websocket = self.active_connections.get(user_id)
-        if websocket:
-            try:
-                await websocket.send_json(message)
-            except Exception as e:
-                print(f"Error sending WS message to user {user_id}: {e}")
-
-
-
-manager = ConnectionManager()"""
+        
         
 # Authentication Schemas
 class UserLogin(BaseModel):
@@ -2478,21 +2449,6 @@ async def confirm_deposit(
             user_agent=request.headers.get("user-agent", "")
         )
         
-        # Send confirmation email
-        """await send_email_notification(
-            email=user.email,
-            subject="Deposit Confirmed - Mining Started!",
-            template_type="deposit_confirmed",
-            context={
-                "name": user.name,
-                "crypto_type": deposit.crypto_type.title(),
-                "amount": deposit.amount,
-                "mining_rate": mining_rate,
-                "deposit_id": deposit.id
-            },
-            db=db
-        )"""
-        
     elif action == "reject":
         deposit.status = DepositStatus.REJECTED
         deposit.confirmed_by = admin_user.id
@@ -2612,71 +2568,6 @@ def pause_mining_session(
 # BACKGROUND TASKS
 # =============================================================================
 
-
-"""@app.on_event("startup")
-@repeat_every(seconds=60)  # Run every minute
-def process_mining_sessions():
-    db = SessionLocal()
-    try:
-        active_sessions = db.query(MiningSession).filter(
-            MiningSession.is_active == True
-        ).all()
-        
-        for session in active_sessions:
-            if not session.created_at:
-                continue
-
-            # Ensure UTC-aware datetime
-            created_at = session.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            
-            elapsed_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
-            
-            deposited_amount = Decimal(session.deposited_amount)
-            mining_rate = Decimal(session.mining_rate) / Decimal(100)
-            
-            mining_per_second = deposited_amount * mining_rate / Decimal(24 * 3600)
-            total_should_be_mined = min(
-                mining_per_second * Decimal(elapsed_seconds),
-                deposited_amount * mining_rate
-            )
-            
-            mining_increment = total_should_be_mined - Decimal(session.mined_amount)
-            
-            if mining_increment > 0:
-                # Update session
-                session.mined_amount = float(total_should_be_mined)
-                session.last_processed = datetime.now(timezone.utc)
-                
-                # Update user balance
-                user = db.query(User).filter(User.id == session.user_id).first()
-                if user:
-                    if session.crypto_type == "bitcoin":
-                        user.bitcoin_balance += float(mining_increment)
-                    else:
-                        user.ethereum_balance += float(mining_increment)
-                    
-                    # Log transaction
-                    log_transaction(
-                        db=db,
-                        user_id=user.id,
-                        transaction_type="mining_reward",
-                        crypto_type=session.crypto_type,
-                        amount=mining_increment,
-                        description=f"Mining reward - {session.crypto_type} mined at {session.mining_rate}% rate",
-                        reference_id=str(session.id)
-                    )
-        
-        db.commit()
-        
-    except Exception as e:
-        print(f"❌ Error processing mining sessions: {e}")
-        db.rollback()
-    finally:
-        db.close()"""
-
-
 @app.on_event("startup")
 @repeat_every(seconds=30)  # Process email queue every 30 seconds
 def process_email_queue():
@@ -2724,64 +2615,6 @@ def process_email_queue():
 # =============================================================================
 # APPLICATION STARTUP
 # =============================================================================
-
-"""if __name__ == "__main__":
-    import uvicorn
-    
-    # Create database tables
-    Base.metadata.create_all(bind=engine)
-    
-    # Create admin user if it doesn't exist
-    db = SessionLocal()
-    try:
-        admin_email = os.getenv("ADMIN_EMAIL")
-        admin_password = os.getenv("ADMIN_PASSWORD")
-        admin_pin = os.getenv("ADMIN_PIN")
-        
-        existing_admin = db.query(User).filter(User.email == admin_email).first()
-        if not existing_admin:
-            hashed_password = pwd_context.hash(admin_password)
-            hashed_pin = pwd_context.hash(admin_pin)
-            
-            admin_user = User(
-                name="Admin",
-                email=admin_email,
-                password=hashed_password,
-                pin=hashed_pin,
-                is_admin=True,
-                is_verified=True,
-                user_id=generate_user_id(),
-                referral_code=generate_referral_code()
-            )
-            
-            db.add(admin_user)
-            db.commit()
-            print(f"Admin user created: {admin_email}")
-        
-        # Create default admin settings
-        existing_settings = db.query(AdminSettings).first()
-        if not existing_settings:
-            default_settings = AdminSettings(
-                bitcoin_rate_usd=50000.0,
-                ethereum_rate_usd=3000.0,
-                referral_reward_bitcoin=0.001,
-                referral_reward_ethereum=0.01,
-                referee_reward_bitcoin=0.0005,
-                referee_reward_ethereum=0.005
-            )
-            db.add(default_settings)
-            db.commit()
-            print("Default admin settings created")
-            
-    except Exception as e:
-        print(f"Error creating admin user: {e}")
-        db.rollback()
-    finally:
-        db.close()
-    
-    uvicorn.run(app, host="0.0.0.0", port=8000)"""
-
-
 
 @app.on_event("startup")
 def setup_database_and_admin():
@@ -3381,63 +3214,6 @@ async def get_user_transaction_summary(
         "total_transactions": sum(count for _, count, _ in transaction_counts)
     }
     
-
-"""@app.post("/api/admin/upload-qr-code")
-async def upload_qr_code(
-    crypto_type: str = Form(...),
-    wallet_address: str = Form(...),
-    qr_file: UploadFile = File(...),
-    admin_user: User = Depends(get_admin_user),
-    db: Session = Depends(get_db)
-):
-    if crypto_type not in ["bitcoin", "ethereum"]:
-        raise HTTPException(status_code=400, detail="Invalid crypto type. Must be 'bitcoin' or 'ethereum'")
-    
-    allowed_types = ["image/jpeg", "image/png", "image/gif"]
-    if qr_file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Only image files (JPEG, PNG, GIF) are allowed")
-    
-    import os
-    import uuid
-    
-    upload_dir = "uploads/qr_codes"
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    file_extension = qr_file.filename.split(".")[-1]
-    unique_filename = f"{crypto_type}_qr_{uuid.uuid4()}.{file_extension}"
-    file_path = os.path.join(upload_dir, unique_filename)
-    
-    with open(file_path, "wb") as buffer:
-        content = await qr_file.read()
-        buffer.write(content)
-    
-    qr_code_url = f"/uploads/qr_codes/{unique_filename}"
-    
-    settings = get_or_create_admin_settings(db)
-    if crypto_type == "bitcoin":
-        settings.bitcoin_deposit_qr = qr_code_url
-        settings.bitcoin_wallet_address = wallet_address
-    else:  # ethereum
-        settings.ethereum_deposit_qr = qr_code_url
-        settings.ethereum_wallet_address = wallet_address
-    
-    db.commit()
-    
-    log_admin_action(
-        db=db,
-        admin_id=admin_user.id,
-        action=f"upload_qr_code_{crypto_type}",
-        target_type="admin_settings",
-        target_id="1",
-        details=f"Uploaded new {crypto_type} QR code with wallet address: {wallet_address}"
-    )
-    
-    return {
-        "message": f"{crypto_type.title()} QR code uploaded successfully",
-        "qr_code_url": qr_code_url,
-        "wallet_address": wallet_address
-    }"""
-
 @app.get("/api/admin/qr-codes")
 def get_all_qr_codes(
     admin_user: User = Depends(get_admin_user),
